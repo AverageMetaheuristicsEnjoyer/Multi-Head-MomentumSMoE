@@ -5,6 +5,8 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from tqdm import tqdm
 import argparse
+import matplotlib.pyplot as plt
+import numpy as np
 
 from models import MHMomentumSMoE
 
@@ -105,6 +107,25 @@ def main(args):
             best_acc = test_acc
             torch.save(model.state_dict(), "best_model.pt")
             print(f"New best model saved with accuracy: {best_acc:.2f}%")
+        
+    plt.figure(figsize = (12, 5))
+    plt.subplot(1, 2, 1)
+    plt.plot(train_losses, label = "Train loss")
+    plt.plot(test_losses, label = "Test loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.xticks(np.arange(args.epochs))
+    plt.legend()
+
+    plt.subplot(1, 2, 2)
+    plt.plot(train_accs, label = "Train accuracy")
+    plt.plot(test_accs, label = "Test accuracy")
+    plt.xlabel("Epoch")
+    plt.ylabel("Accuracy")
+    plt.xticks(np.arange(args.epochs))
+    plt.legend()
+
+    plt.savefig(f"output/training_curves_{args.name}.png")
     
     print(f"Best test accuracy: {best_acc:.2f}%")
 
@@ -121,6 +142,7 @@ if __name__ == "__main__":
     parser.add_argument("--gamma", type = float, default = 1.0)
     parser.add_argument("--lr", type = float, default = 0.001)
     parser.add_argument("--epochs", type = int, default = 10)
+    parser.add_argument("--name", type = str, default = "Multi-head Momentum SMoE", help = "The name of a model")
     
     args = parser.parse_args()
     main(args)
