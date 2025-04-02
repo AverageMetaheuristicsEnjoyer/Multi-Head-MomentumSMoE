@@ -7,6 +7,7 @@ from tqdm import tqdm
 import argparse
 import matplotlib.pyplot as plt
 import numpy as np
+import os
 
 from models import MHMomentumSMoE
 
@@ -105,7 +106,7 @@ def main(args):
         
         if test_acc > best_acc:
             best_acc = test_acc
-            torch.save(model.state_dict(), "best_model.pt")
+            torch.save(model.state_dict(), os.path.join(args.output_dir, "best_model.pt"))
             print(f"New best model saved with accuracy: {best_acc:.2f}%")
         
     plt.figure(figsize = (12, 5))
@@ -125,7 +126,7 @@ def main(args):
     plt.xticks(np.arange(args.epochs))
     plt.legend()
 
-    plt.savefig(f"output/training_curves_{args.name}.png")
+    plt.savefig(os.path.join(args.output_dir, "training_curves.png"))
     
     print(f"Best test accuracy: {best_acc:.2f}%")
 
@@ -142,7 +143,9 @@ if __name__ == "__main__":
     parser.add_argument("--gamma", type = float, default = 1.0)
     parser.add_argument("--lr", type = float, default = 0.001)
     parser.add_argument("--epochs", type = int, default = 10)
-    parser.add_argument("--name", type = str, default = "Multi-head Momentum SMoE", help = "The name of a model")
+    parser.add_argument("--output-dir", type = str, default = "output/", help = "Path to the output directory")
     
     args = parser.parse_args()
+
+    os.makedirs(args.output_dir, exist_ok = True)
     main(args)
