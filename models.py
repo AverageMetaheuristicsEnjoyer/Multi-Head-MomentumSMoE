@@ -72,13 +72,11 @@ class MultiHeadSplitLayer(nn.Module):
     def forward(self, x):
         batch_size, seq_len, _ = x.shape
         
-        x_hat = self.multi_head_proj(x)
+        x_reshaped = self.multi_head_proj(x)
         
-        x_split = x_hat.reshape(batch_size, seq_len, self.num_heads, self.head_dim)
+        x_reshaped = x_reshaped.reshape(batch_size * seq_len * self.num_heads, self.head_dim)
         
-        x_flat = x_split.reshape(batch_size * seq_len * self.num_heads, self.head_dim)
-        
-        return x_flat
+        return x_reshaped
 
 class MultiHeadMergeLayer(nn.Module):
     def __init__(self, input_dim, num_heads):
@@ -88,14 +86,12 @@ class MultiHeadMergeLayer(nn.Module):
         self.head_dim = input_dim // num_heads
         self.merge_proj = nn.Linear(input_dim, input_dim)
         
-    def forward(self, o, batch_size, seq_len):
-        o_reshaped = o.reshape(batch_size, seq_len, self.num_heads, self.head_dim)
+    def forward(self, x, batch_size, seq_len):        
+        x_merged = x.reshape(batch_size, seq_len, self.input_dim)
         
-        o_concat = o_reshaped.reshape(batch_size, seq_len, self.input_dim)
+        x_merged = self.merge_proj(x_merged)
         
-        o_merged = self.merge_proj(o_concat)
-        
-        return o_merged
+        return x_merged
 
 class MultiHeadMomentumSMoELayer(nn.Module):
     def __init__(
