@@ -1,17 +1,17 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
 from tqdm import tqdm
 import argparse
 import matplotlib.pyplot as plt
 import numpy as np
 import os
+import wandb
 
+from utils import get_data, make_wandb_table, EarlyStopping
 from models import MHMomentumSMoE
 
-def train(model, train_loader, optimizer, criterion, device, epoch):
+def iter_train(model, train_loader, optimizer, criterion, device, epoch):
     model.train()
     train_loss = 0
     correct = 0
@@ -39,7 +39,7 @@ def train(model, train_loader, optimizer, criterion, device, epoch):
     
     return train_loss / len(train_loader), 100. * correct / total
 
-def validate(model, val_loader, criterion, device):
+def iter_validate(model, val_loader, criterion, device):
     model.eval()
     val_loss = 0
     correct = 0
@@ -56,35 +56,52 @@ def validate(model, val_loader, criterion, device):
     
     return val_loss / len(val_loader), 100. * correct / total
 
-def main(args):
+def train(args):
+    if args.wandb_key:
+        wandb.login(key = args.wandb_key)
+        wandb.init(
+            project = args.project_name,
+            name = args.run_name
+        )
+        
+        config = {
+            "dataset": args.data,
+            "batch_size": args.batch_size,
+            "hidden_size": args.hidden_size,
+            "num_experts": args.num_experts,
+            "num_heads": args.num_heads,
+            "num_layers": args.num_layers,
+            "moe_top_k": args.moe_top_k,
+            "dropout": args.dropout,
+            "mu": args.mu,
+            "gamma1": args.gamma1,
+            "gamma2": args.gamma2,
+            "beta1": args.beta1,
+            "beta2": args.beta2,
+            "learning_rate": args.lr,
+            "epochs": args.epochs
+        }
+        wandb.config.update(config)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,))
-    ])
-    
-    train_dataset = datasets.MNIST("./data", train = True, download = True, transform = transform)
-    test_dataset = datasets.MNIST("./data", train = False, transform = transform)
-    
-    train_loader = DataLoader(train_dataset, batch_size = args.batch_size, shuffle = True)
-    test_loader = DataLoader(test_dataset, batch_size = args.batch_size, shuffle = False)
+    train_loader, test_loader, input_size, num_classes = get_data(ds_name = args.data, batch_size = args.batch_size)
     
     model = MHMomentumSMoE(
-        input_size = 28 * 28,
+        input_size = input_size,
         hidden_size = args.hidden_size,
-        num_classes = 10,
+        num_classes = num_classes,
         num_experts = args.num_experts,
         num_heads = args.num_heads,
         num_layers = args.num_layers,
-        k = args.k,
-        dropout_rate = args.dropout_rate,
+        moe_top_k = args.moe_top_k,
+        dropout = args.dropout,
         mu = args.mu,
-        gamma = args.gamma
+        gamma = args.gamma1
     ).to(device)
     
     optimizer = optim.Adam(model.parameters(), lr = args.lr)
     criterion = nn.CrossEntropyLoss()
+    early_stopping = EarlyStopping(patience = 10)
     
     best_acc = 0
     train_losses = []
@@ -93,8 +110,8 @@ def main(args):
     test_accs = []
     
     for epoch in range(1, args.epochs + 1):
-        train_loss, train_acc = train(model, train_loader, optimizer, criterion, device, epoch)
-        test_loss, test_acc = validate(model, test_loader, criterion, device)
+        train_loss, train_acc = iter_train(model, train_loader, optimizer, criterion, device, epoch)
+        test_loss, test_acc = iter_validate(model, test_loader, criterion, device)
         
         train_losses.append(train_loss)
         train_accs.append(train_acc)
@@ -103,49 +120,78 @@ def main(args):
         
         print(f"Epoch {epoch}: Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%, "
               f"Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.2f}%")
-        
+
+        if args.wandb_key:
+            wandb.log({
+                "train_loss": train_loss,
+                "train_acc": train_acc,
+                "test_loss": test_loss,
+                "test_acc": test_acc,
+            })
+
         if test_acc > best_acc:
             best_acc = test_acc
-            torch.save(model.state_dict(), os.path.join(args.output_dir, "best_model.pt"))
+            model_path = os.path.join(args.output_dir, "models", f"best_{args.run_name}_model.pt")
+            torch.save(model.state_dict(), model_path)
+
+            model_artifact = wandb.Artifact(
+                name = args.run_name,
+                type = "model"
+            )
+
+            model_artifact.add_file(model_path)
+
+            wandb.log_artifact(
+                model_artifact,
+                aliases=[f"epoch - {epoch}", f"test_accuracy - {best_acc}"]
+            )
+            
             print(f"New best model saved with accuracy: {best_acc:.2f}%")
-        
-    plt.figure(figsize = (12, 5))
-    plt.subplot(1, 2, 1)
-    plt.plot(train_losses, label = "Train loss")
-    plt.plot(test_losses, label = "Test loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.xticks(np.arange(args.epochs))
-    plt.legend()
+            
+            # Log best accuracy to wandb summary
+            if args.wandb_key:
+                wandb.run.summary[f"{args.run_name}_best_acc"] = best_acc
 
-    plt.subplot(1, 2, 2)
-    plt.plot(train_accs, label = "Train accuracy")
-    plt.plot(test_accs, label = "Test accuracy")
-    plt.xlabel("Epoch")
-    plt.ylabel("Accuracy")
-    plt.xticks(np.arange(args.epochs))
-    plt.legend()
+        early_stopping.check(test_loss)
+        if early_stopping.stop_training:
+            print(f"Early stopping at epoch {epoch}\n")
+            break
 
-    plt.savefig(os.path.join(args.output_dir, "training_curves.png"))
+    make_wandb_table(
+        train_losses,
+        train_accs,
+        test_losses,
+        test_accs,
+        args.run_name
+    )
     
-    print(f"Best test accuracy: {best_acc:.2f}%")
+    wandb.finish()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--data", type = str, default = "mnist", help = "Dataset used in training: [mnist, cifar10]")
     parser.add_argument("--batch-size", type = int, default = 128)
     parser.add_argument("--hidden-size", type = int, default = 256)
     parser.add_argument("--num-experts", type = int, default = 8)
     parser.add_argument("--num-heads", type = int, default = 4)
     parser.add_argument("--num-layers", type = int, default = 2)
-    parser.add_argument("--k", type = int, default = 2)
-    parser.add_argument("--dropout-rate", type = float, default = 0.1)
+    parser.add_argument("--moe_top_k", type = int, default = 2)
+    parser.add_argument("--dropout", type = float, default = 0.1)
     parser.add_argument("--mu", type = float, default = 0.7)
-    parser.add_argument("--gamma", type = float, default = 1.0)
+    parser.add_argument("--gamma1", type=float, default = 1.0)
+    parser.add_argument("--gamma2", type=float, default = 1.0)
+    parser.add_argument("--beta1", type=float, default = 0.9)
+    parser.add_argument("--beta2", type=float, default = 0.999)
     parser.add_argument("--lr", type = float, default = 0.001)
     parser.add_argument("--epochs", type = int, default = 10)
     parser.add_argument("--output-dir", type = str, default = "output/", help = "Path to the output directory")
     
+    # wandb arguments
+    parser.add_argument("--wandb-key", type = str, default = None)
+    parser.add_argument("--project-name", type = str, default = "project_name")
+    parser.add_argument("--run-name", type = str, default = "run_name")
+    
     args = parser.parse_args()
 
-    os.makedirs(args.output_dir, exist_ok = True)
-    main(args)
+    os.makedirs(os.path.join(args.output_dir, "models"), exist_ok = True)
+    train(args)
