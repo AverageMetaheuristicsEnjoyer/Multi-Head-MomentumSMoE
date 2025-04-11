@@ -133,23 +133,21 @@ def train(args):
             best_acc = test_acc
             model_path = os.path.join(args.output_dir, "models", f"best_{args.run_name}_model.pt")
             torch.save(model.state_dict(), model_path)
-
-            model_artifact = wandb.Artifact(
-                name = args.run_name,
-                type = "model"
-            )
-
-            model_artifact.add_file(model_path)
-
-            wandb.log_artifact(
-                model_artifact,
-                aliases=[f"epoch - {epoch}", f"test_accuracy - {best_acc}"]
-            )
+            print(f"New best model saved with accuracy: {best_acc:.2f}%")            
             
-            print(f"New best model saved with accuracy: {best_acc:.2f}%")
-            
-            # Log best accuracy to wandb summary
             if args.wandb_key:
+                model_artifact = wandb.Artifact(
+                    name = args.run_name,
+                    type = "model"
+                )
+
+                model_artifact.add_file(model_path)
+
+                wandb.log_artifact(
+                    model_artifact,
+                    aliases=[f"epoch - {epoch}", f"test_accuracy - {best_acc}"]
+                )
+
                 wandb.run.summary[f"{args.run_name}_best_acc"] = best_acc
 
         early_stopping.check(test_loss)
