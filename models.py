@@ -308,7 +308,6 @@ class MHMomentumSMoE(nn.Module):
                 MultiHeadMomentumLayer(
                     input_dim = hidden_size,
                     hidden_dim = inner_hidden_size,
-                    output_dim = hidden_size,
                     num_experts = num_experts,
                     num_heads = num_heads,
                     moe_top_k = moe_top_k,
