@@ -135,10 +135,11 @@ class MultiHeadSplitLayer(nn.Module):
     def forward(self, x):
         batch_size, seq_len, _ = x.shape
 
-        x_reshaped = self.multi_head_proj(x)
-        x_reshaped = x_reshaped.reshape(batch_size * seq_len * self.num_heads, self.head_dim)
+        N = batch_size * seq_len
+        x_reshaped = self.multi_head_proj(x).reshape(N, self.num_heads, self.head_dim).contiguous()
+        x_reshaped = x_reshaped.reshape(N * self.num_heads, self.head_dim).contiguous()
 
-        return x_reshaped
+        return x_reshaped, N
 
 class MultiHeadMergeLayer(nn.Module):
     def __init__(self, input_dim, num_heads):
@@ -148,8 +149,9 @@ class MultiHeadMergeLayer(nn.Module):
         self.head_dim = input_dim // num_heads
         self.merge_proj = nn.Linear(input_dim, input_dim)
 
-    def forward(self, x, batch_size, seq_len):
-        x_merged = x.reshape(batch_size, seq_len, self.input_dim)
+    def forward(self, x, N):
+        x_merged = x.reshape(N, self.num_heads, self.head_dim)
+        x_merged = x.reshape(N, self.input_dim).contiguous()
         x_merged = self.merge_proj(x_merged)
 
         return x_merged
@@ -210,7 +212,7 @@ class MultiHeadMomentumLayer(nn.Module):
     def forward(self, x, momentum = None):
         batch_size, seq_len, _ = x.shape
 
-        sub_tokens = self.split_layer(x)
+        sub_tokens, N = self.split_layer(x)
 
         if isinstance(momentum, tuple) and len(momentum) == 3:
             if momentum[0] is None:
@@ -218,16 +220,16 @@ class MultiHeadMomentumLayer(nn.Module):
                             torch.zeros_like(sub_tokens),
                             torch.zeros_like(sub_tokens))
 
-            moe_output, momentum = self.moe_layer(sub_tokens, momentum)
         else:
             if momentum is None:
                 momentum = torch.zeros_like(sub_tokens)
             
-            moe_output, momentum = self.moe_layer(sub_tokens, momentum)
+        moe_output, momentum = self.moe_layer(sub_tokens, momentum)
 
-        final_output = self.merge_layer(moe_output, batch_size, seq_len)
+        merged_output = self.merge_layer(moe_output, N)
+        merged_output = merged_output.reshape(batch_size, seq_len, -1)
 
-        return final_output, momentum
+        return merged_output, momentum
 
 # "Replacement" of the multi-head attention block in a layer (multi-head attention + MoE)
 # since experiments're on the early stage
