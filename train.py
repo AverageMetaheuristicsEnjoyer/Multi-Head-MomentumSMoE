@@ -68,6 +68,7 @@ def train(args):
             "dataset": args.data,
             "batch_size": args.batch_size,
             "hidden_size": args.hidden_size,
+            "inner_hidden_size": args.inner_hidden_size,
             "num_experts": args.num_experts,
             "num_heads": args.num_heads,
             "num_layers": args.num_layers,
@@ -89,6 +90,7 @@ def train(args):
     model = MHMomentumSMoE(
         input_size = input_size,
         hidden_size = args.hidden_size,
+        inner_hidden_size = args.inner_hidden_size,
         num_classes = num_classes,
         num_experts = args.num_experts,
         num_heads = args.num_heads,
@@ -96,7 +98,11 @@ def train(args):
         moe_top_k = args.moe_top_k,
         dropout = args.dropout,
         mu = args.mu,
-        gamma = args.gamma1
+        gamma1 = args.gamma1,
+        gamma2 = args.gamma2,
+        beta1 = args.beta1,
+        beta2 = args.beta2,
+        mom_type = args.mom_type
     ).to(device)
     
     optimizer = optim.Adam(model.parameters(), lr = args.lr)
@@ -170,6 +176,7 @@ if __name__ == "__main__":
     parser.add_argument("--data", type = str, default = "mnist", help = "Dataset used in training: [mnist, cifar10]")
     parser.add_argument("--batch-size", type = int, default = 128)
     parser.add_argument("--hidden-size", type = int, default = 256)
+    parser.add_argument("--inner-hidden-size", type = int, default = 256)
     parser.add_argument("--num-experts", type = int, default = 8)
     parser.add_argument("--num-heads", type = int, default = 4)
     parser.add_argument("--num-layers", type = int, default = 2)
@@ -180,6 +187,7 @@ if __name__ == "__main__":
     parser.add_argument("--gamma2", type=float, default = 1.0)
     parser.add_argument("--beta1", type=float, default = 0.9)
     parser.add_argument("--beta2", type=float, default = 0.999)
+    parser.add_argument("--mom-type", type=str, default = "heavy-ball")
     parser.add_argument("--lr", type = float, default = 0.001)
     parser.add_argument("--epochs", type = int, default = 10)
     parser.add_argument("--output-dir", type = str, default = "output/", help = "Path to the output directory")

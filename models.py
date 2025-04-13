@@ -18,7 +18,7 @@ class MomentumLayer(nn.Module):
         output_dim,
         num_experts,
         moe_top_k = 2,
-        dropout_rate = 0.1,
+        dropout = 0.1,
         mu = 0.7,
         gamma = 1.0
     ):
@@ -34,7 +34,7 @@ class MomentumLayer(nn.Module):
                 input_dim,
                 hidden_dim,
                 output_dim,
-                dropout_rate,
+                dropout,
             )
             for _ in range(num_experts)
         ])
@@ -42,7 +42,7 @@ class MomentumLayer(nn.Module):
         self.gate = TopKGate(input_dim, num_experts, moe_top_k)
         self.layer_norm = nn.LayerNorm(output_dim)
 
-    def forward(self, x, momentum=None):
+    def forward(self, x, momentum):
         gates, _ = self.gate(x)
 
         expert_outputs = torch.zeros_like(x)
@@ -56,6 +56,73 @@ class MomentumLayer(nn.Module):
         output = self.layer_norm(output)
 
         return output, momentum
+
+class AdamLayer(nn.Module):
+    def __init__(
+        self,
+        input_dim,
+        hidden_dim,
+        output_dim,
+        num_experts,
+        moe_top_k = 2,
+        dropout = 0.1,
+        mu = 0.7,
+        gamma1 = 1.0,
+        gamma2 = 1.0,
+        beta1 = 0.9,
+        beta2 = 0.999,
+        layerth = 0
+    ):
+        super().__init__()
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.num_experts = num_experts
+        self.mu = mu
+        self.gamma1 = gamma1
+        self.gamma2 = gamma2
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.layerth = layerth
+
+        self.experts = nn.ModuleList([
+            FeedForwardExpert(
+                input_dim,
+                hidden_dim,
+                output_dim,
+                dropout,
+            )
+            for _ in range(num_experts)
+        ])
+
+        self.gate = TopKGate(input_dim, num_experts, moe_top_k)
+        self.layer_norm = nn.LayerNorm(output_dim)
+
+    def forward(self, x, moment):
+        gates, _ = self.gate(x)
+
+        expert_outputs = torch.zeros_like(x)
+        for i, expert in enumerate(self.experts):
+            expert_out = expert(x)
+            expert_outputs += gates[..., i:i + 1] * expert_out
+        # TODO: possible dropout(experts_outputs)
+        
+        if self.layerth == 0:
+            momentum = self.mu * moment[2] + self.gamma2 * expert_outputs
+            p = moment[0]
+            v = moment[1]
+            p = self.beta1 * p + (1 - self.beta1) * expert_outputs
+            v = self.beta2 * v + (1 - self.beta2) * (expert_outputs ** 2)
+            adam = (self.gamma1 / torch.sqrt(v + 1e-8)) * p + x
+
+            output = self.layer_norm(x - adam)
+        
+        else:
+            p = moment[0]
+            v = moment[1]
+            momentum = self.mu * moment[2] + self.gamma2 * expert_outputs
+            output = self.layer_norm(x - momentum)
+
+        return output, (p, v, momentum)
 
 class MultiHeadSplitLayer(nn.Module):
     def __init__(self, input_dim, num_heads):
@@ -92,33 +159,52 @@ class MultiHeadMomentumLayer(nn.Module):
         self,
         input_dim,
         hidden_dim,
-        output_dim,
         num_experts,
         num_heads,
         moe_top_k = 2,
-        dropout_rate = 0.1,
+        dropout = 0.1,
         mu = 0.7,
-        gamma = 1.0
+        gamma1 = 1.0,
+        gamma2 = 1.0,
+        beta1 = 0.9,
+        beta2 = 0.999,
+        mom_type = "heavy-ball",
+        layerth = 0
     ):
         super().__init__()
         self.input_dim = input_dim
-        self.output_dim = output_dim
         self.num_heads = num_heads
         self.head_dim = input_dim // num_heads
-        self.mu = mu
-        self.gamma = gamma
+        self.head_hid_dim = hidden_dim // num_heads
 
         self.split_layer = MultiHeadSplitLayer(input_dim, num_heads)
-        self.moe_layer = MomentumLayer(
-            self.head_dim,
-            hidden_dim // num_heads,
-            self.head_dim,
-            num_experts,
-            moe_top_k,
-            dropout_rate,
-            mu,
-            gamma
-        )
+        
+        if mom_type == "adam":
+            self.moe_layer = AdamLayer(
+                input_dim = self.head_dim,
+                hidden_dim = self.head_hid_dim,
+                output_dim = self.head_dim,
+                num_experts = num_experts,
+                moe_top_k = moe_top_k,
+                dropout = dropout,
+                mu = mu,
+                gamma1 = gamma1,
+                gamma2 = gamma2,
+                beta1 = beta1,
+                beta2 = beta2,
+                layerth = layerth
+            )
+        else:
+            self.moe_layer = MomentumLayer(
+                input_dim = self.head_dim,
+                hidden_dim = self.head_hid_dim,
+                output_dim = self.head_dim,
+                num_experts = num_experts,
+                moe_top_k = moe_top_k,
+                dropout = dropout,
+                mu = mu,
+                gamma = gamma2
+            )
         self.merge_layer = MultiHeadMergeLayer(input_dim, num_heads)
 
     def forward(self, x, momentum = None):
@@ -126,10 +212,19 @@ class MultiHeadMomentumLayer(nn.Module):
 
         sub_tokens = self.split_layer(x)
 
-        if momentum is None:
-            momentum = torch.zeros_like(sub_tokens)
+        if isinstance(momentum, tuple) and len(momentum) == 3:
+            if momentum[0] is None:
+                momentum = (torch.zeros_like(sub_tokens), 
+                            torch.zeros_like(sub_tokens),
+                            torch.zeros_like(sub_tokens))
 
-        moe_output, momentum = self.moe_layer(sub_tokens, momentum)
+            moe_output, momentum = self.moe_layer(sub_tokens, momentum)
+        else:
+            if momentum is None:
+                momentum = torch.zeros_like(sub_tokens)
+            
+            moe_output, momentum = self.moe_layer(sub_tokens, momentum)
+
         final_output = self.merge_layer(moe_output, batch_size, seq_len)
 
         return final_output, momentum
@@ -142,12 +237,12 @@ class FeedForward(nn.Module):
         input_dim,
         hidden_dim,
         output_dim,
-        dropout_rate = 0.1
+        dropout = 0.1
     ):
         super().__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, output_dim)
-        self.dropout = nn.Dropout(dropout_rate)
+        self.dropout = nn.Dropout(dropout)
         self.layer_norm = nn.LayerNorm(output_dim)
         
     def forward(self, x):
@@ -163,6 +258,7 @@ class MHMomentumSMoE(nn.Module):
         self,
         input_size,
         hidden_size,
+        inner_hidden_size,
         num_classes,
         num_experts,
         num_heads,
@@ -170,9 +266,15 @@ class MHMomentumSMoE(nn.Module):
         moe_top_k = 2,
         dropout = 0.1,
         mu = 0.7,
-        gamma = 1.0
+        gamma1 = 1.0,
+        gamma2 = 1.0,
+        beta1 = 0.9,
+        beta2 = 0.999,
+        mom_type = "heavy-ball"
     ):
         super().__init__()
+        self.num_layers = num_layers
+        self.mom_type = mom_type
 
         # just for not sending num_channels through the argument
         self.num_channels = 1 if input_size <= 28*28*3 else 3
@@ -197,21 +299,31 @@ class MHMomentumSMoE(nn.Module):
         self.ffn_layers = nn.ModuleList()
         self.moe_layers = nn.ModuleList()
         
-        for _ in range(num_layers):
+        for i in range(self.num_layers):
             self.ffn_layers.append(
                 FeedForward(hidden_size, hidden_size * 4, hidden_size, dropout)
             )
             
             self.moe_layers.append(
                 MultiHeadMomentumLayer(
-                    hidden_size, hidden_size * 4, hidden_size,
-                    num_experts, num_heads, moe_top_k, dropout, mu, gamma
+                    input_dim = hidden_size,
+                    hidden_dim = inner_hidden_size,
+                    output_dim = hidden_size,
+                    num_experts = num_experts,
+                    num_heads = num_heads,
+                    moe_top_k = moe_top_k,
+                    dropout = dropout,
+                    mu = mu,
+                    gamma1 = gamma1,
+                    gamma2 = gamma2,
+                    beta1 = beta1,
+                    beta2 = beta2,
+                    mom_type = self.mom_type,
+                    layerth = i,
                 )
             )
 
         self.out_embed = nn.Linear(hidden_size, num_classes)
-        
-        self.num_layers = num_layers
 
     def forward(self, x):
         batch_size = x.shape[0]
@@ -223,7 +335,10 @@ class MHMomentumSMoE(nn.Module):
         
         x = x.unsqueeze(1)  # [batch_size, 1, hidden_size]
         
-        momentum_list = [None] * self.num_layers
+        if self.mom_type == "adam":
+            momentum_list = [(None, None, None)] * self.num_layers
+        else:
+            momentum_list = [None] * self.num_layers
         
         for i in range(self.num_layers):
             x = self.ffn_layers[i](x)
