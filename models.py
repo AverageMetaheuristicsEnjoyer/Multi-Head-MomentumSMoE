@@ -41,6 +41,7 @@ class MomentumLayer(nn.Module):
 
         self.gate = TopKGate(input_dim, num_experts, moe_top_k)
         self.layer_norm = nn.LayerNorm(output_dim)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, momentum):
         gates, _ = self.gate(x)
@@ -49,6 +50,7 @@ class MomentumLayer(nn.Module):
         for i, expert in enumerate(self.experts):
             expert_out = expert(x)
             expert_outputs += gates[..., i:i+1] * expert_out
+        expert_outputs = self.dropout(expert_outputs)
 
         momentum = self.mu * momentum + self.gamma * expert_outputs
         output = x - momentum
@@ -96,6 +98,7 @@ class AdamLayer(nn.Module):
 
         self.gate = TopKGate(input_dim, num_experts, moe_top_k)
         self.layer_norm = nn.LayerNorm(output_dim)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, moment):
         gates, _ = self.gate(x)
@@ -104,7 +107,7 @@ class AdamLayer(nn.Module):
         for i, expert in enumerate(self.experts):
             expert_out = expert(x)
             expert_outputs += gates[..., i:i + 1] * expert_out
-        # TODO: possible dropout(experts_outputs)
+        expert_outputs = self.dropout(expert_outputs)
         
         if self.layerth == 0:
             momentum = self.mu * moment[2] + self.gamma2 * expert_outputs
