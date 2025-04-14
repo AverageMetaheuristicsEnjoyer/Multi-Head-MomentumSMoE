@@ -22,8 +22,11 @@ def iter_train(model, train_loader, optimizer, criterion, device, epoch):
         data, target = data.to(device), target.to(device)
         
         optimizer.zero_grad()
-        output = model(data)
+        output, lb_loss = model(data)
+        
         loss = criterion(output, target)
+        loss += lb_loss
+        
         loss.backward()
         optimizer.step()
         
@@ -48,7 +51,7 @@ def iter_validate(model, val_loader, criterion, device):
     with torch.no_grad():
         for data, target in val_loader:
             data, target = data.to(device), target.to(device)
-            output = model(data)
+            output, _ = model(data)
             val_loss += criterion(output, target).item()
             _, predicted = output.max(1)
             total += target.size(0)
@@ -80,7 +83,8 @@ def train(args):
             "beta1": args.beta1,
             "beta2": args.beta2,
             "learning_rate": args.lr,
-            "epochs": args.epochs
+            "epochs": args.epochs,
+            "alpha": args.alpha
         }
         wandb.config.update(config)
 
@@ -102,7 +106,8 @@ def train(args):
         gamma2 = args.gamma2,
         beta1 = args.beta1,
         beta2 = args.beta2,
-        mom_type = args.mom_type
+        mom_type = args.mom_type,
+        alpha = args.alpha
     ).to(device)
     
     optimizer = optim.Adam(model.parameters(), lr = args.lr)
@@ -191,6 +196,7 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type = float, default = 0.001)
     parser.add_argument("--epochs", type = int, default = 10)
     parser.add_argument("--output-dir", type = str, default = "output/", help = "Path to the output directory")
+    parser.add_argument("--alpha", type = float, default = 0.01, help = "Coefficient for the load balancing loss from Multi-head MoE paper")
     
     # wandb arguments
     parser.add_argument("--wandb-key", type = str, default = None)

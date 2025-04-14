@@ -44,7 +44,7 @@ class MomentumLayer(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, momentum):
-        gates, _ = self.gate(x)
+        gates, _, lb_loss = self.gate(x)
 
         expert_outputs = torch.zeros_like(x)
         for i, expert in enumerate(self.experts):
@@ -57,7 +57,7 @@ class MomentumLayer(nn.Module):
 
         output = self.layer_norm(output)
 
-        return output, momentum
+        return output, momentum, lb_loss
 
 class AdamLayer(nn.Module):
     def __init__(
@@ -101,7 +101,7 @@ class AdamLayer(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, moment):
-        gates, _ = self.gate(x)
+        gates, _, lb_loss = self.gate(x)
 
         expert_outputs = torch.zeros_like(x)
         for i, expert in enumerate(self.experts):
@@ -125,7 +125,7 @@ class AdamLayer(nn.Module):
             momentum = self.mu * moment[2] + self.gamma2 * expert_outputs
             output = self.layer_norm(x - momentum)
 
-        return output, (p, v, momentum)
+        return output, (p, v, momentum), lb_loss
 
 class MultiHeadSplitLayer(nn.Module):
     def __init__(self, input_dim, num_heads):
@@ -227,12 +227,12 @@ class MultiHeadMomentumLayer(nn.Module):
             if momentum is None:
                 momentum = torch.zeros_like(sub_tokens)
             
-        moe_output, momentum = self.moe_layer(sub_tokens, momentum)
+        moe_output, momentum, lb_loss = self.moe_layer(sub_tokens, momentum)
 
         merged_output = self.merge_layer(moe_output, N)
         merged_output = merged_output.reshape(batch_size, seq_len, -1)
 
-        return merged_output, momentum
+        return merged_output, momentum, lb_loss
 
 # "Replacement" of the multi-head attention block in a layer (multi-head attention + MoE)
 # since experiments're on the early stage
@@ -275,11 +275,13 @@ class MHMomentumSMoE(nn.Module):
         gamma2 = 1.0,
         beta1 = 0.9,
         beta2 = 0.999,
-        mom_type = "heavy-ball"
+        mom_type = "heavy-ball",
+        alpha = 0.01
     ):
         super().__init__()
         self.num_layers = num_layers
         self.mom_type = mom_type
+        self.alpha = alpha
 
         # just for not sending num_channels through the argument
         self.num_channels = 1 if input_size <= 28*28*3 else 3
@@ -344,12 +346,15 @@ class MHMomentumSMoE(nn.Module):
         else:
             momentum_list = [None] * self.num_layers
         
+        tot_lb_loss = 0
         for i in range(self.num_layers):
             x = self.ffn_layers[i](x)
             
-            x, momentum_list[i] = self.moe_layers[i](x, momentum_list[i])
+            x, momentum_list[i], lb_loss = self.moe_layers[i](x, momentum_list[i])
+            tot_lb_loss += lb_loss
 
         x = x.squeeze(1)
         out = self.out_embed(x)
+        tot_lb_loss *= self.alpha
         
-        return out
+        return out, tot_lb_loss

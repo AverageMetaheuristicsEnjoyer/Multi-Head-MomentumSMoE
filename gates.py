@@ -20,4 +20,11 @@ class TopKGate(nn.Module):
 
         gates = torch.zeros_like(routing_weights)
         gates = gates.scatter_(-1, top_k_indices, F.softmax(top_k_weights, dim = -1))
-        return gates, routing_weights
+
+        expert_counts = gates.sum(0)
+        sub_token_count = x.size(0)
+        router_freq = gates.mean(0)
+
+        lb_loss = self.num_experts * (router_freq * (expert_counts / sub_token_count)).sum()
+        
+        return gates, routing_weights, lb_loss
