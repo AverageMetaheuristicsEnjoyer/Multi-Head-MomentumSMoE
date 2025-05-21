@@ -82,6 +82,105 @@ if switch_from_env("FMOE_FASTER_SCHEDULE_ENABLE", False):
     fmoe_faster_schedule = True
     from .fastermoe.schedule import _fmoe_general_global_forward
 
+class SoftFMoE(nn.Module):
+    def __init__(
+        self,
+        num_expert=32,
+        d_model=1024,
+        world_size=1,
+        num_slots = 1,
+        slice_group=None,
+        gate=None,
+        gate_hook=None,
+        moe_group=None,
+    ):
+        super().__init__()
+        self.num_expert = num_expert
+        self.num_slots = num_slots
+        self.total_slots = num_expert * world_size * num_slots
+        self.d_model = d_model
+        self.world_size = world_size
+
+        self.slice_group = slice_group
+        if self.slice_group is None:
+            self.slice_size = 1
+            self.slice_rank = 0
+        else:
+            self.slice_size = self.slice_group.size()
+            self.slice_rank = self.slice_group.rank()
+
+        self.gate = gate(d_model, num_expert, world_size, num_slots)
+        self.gate_hook = gate_hook
+        self.moe_group = moe_group
+
+    def expert_fn(self, inp, fwd_expert_count):
+        r"""
+        The default expert function which either calls the experts as a whole
+        or as separate experts.
+        """
+        if self.experts_fused:
+            return self.experts(inp, fwd_expert_count)
+        if isinstance(fwd_expert_count, torch.Tensor):
+            fwd_expert_count = fwd_expert_count.cpu().numpy()
+        outputs = []
+        base_idx = 0
+        for i in range(self.num_expert):
+            batch_size = fwd_expert_count[i]
+            inp_slice = inp[base_idx : base_idx + batch_size]
+            outputs.append(self.experts[i](inp_slice))
+            base_idx += batch_size
+        return torch.cat(outputs, dim=0)  
+    
+    def mark_parallel_comm(self, expert_dp_comm="none"):
+        r"""
+        Automatically mark the data parallel comms of the parameters within the
+        module. This can be typically called at the end of the __init__ function
+        in child classes.
+        """
+        if self.experts is not None:
+            comm = expert_dp_comm
+            if isinstance(self.experts, list):
+                for e in self.experts:
+                    mark_module_parallel_comm(e, comm)
+            else:
+                mark_module_parallel_comm(self.experts, comm)
+        mark_module_parallel_comm(self.gate, "gate")
+    
+    def forward(self, moe_inp):
+        moe_inp_batch_size = tree.flatten(
+            tree.map_structure(lambda tensor: tensor.shape[0], moe_inp)
+        )
+        assert all(
+            [batch_size == moe_inp_batch_size[0] for batch_size in moe_inp_batch_size]
+        ), "MoE inputs must have the same batch size"
+
+        if self.world_size > 1:
+
+            def ensure_comm_func(tensor):
+                ensure_comm(tensor, self.moe_group)
+
+            tree.map_structure(ensure_comm_func, moe_inp)
+        if self.slice_size > 1:
+
+            def slice_func(tensor):
+                return Slice.apply(
+                    tensor, self.slice_rank, self.slice_size, self.slice_group
+                )
+
+            moe_inp = tree.map_structure(slice_func, moe_inp)
+        
+        dispatch_weights, combine_weights = self.gate(moe_inp)
+
+        if self.gate_hook is not None:
+            # doubt that it might be useful but why not :)
+            self.gate_hook(dispatch_weights, combine_weights, None)
+        
+        global_slots_inp = torch.matmul(dispatch_weights.t(), moe_inp)
+        
+
+        ...
+
+        return moe_out
 
 class FMoE(nn.Module):
     r"""
