@@ -58,10 +58,6 @@ class FMoETransformerMLP(FMoE):
             gate = gate,
             world_size=world_size,
         )
-        # if mhmoe_num_heads > 1:
-        #     expert_inner_size = int(inner_hidden_size * mhmoe_beta) // mhmoe_num_heads
-        # else:
-        #     expert_inner_size = inner_hidden_size // mhmoe_num_heads
 
         self.experts = _Expert(
             hidden_size = hidden_size // mhmoe_num_heads,
@@ -70,7 +66,6 @@ class FMoETransformerMLP(FMoE):
             num_experts = num_experts,
             rank = expert_rank,
         )
-        self.mark_parallel_comm(expert_dp_comm)
 
         self.hidden_size = hidden_size
         self.mhmoe_num_heads = mhmoe_num_heads
@@ -82,6 +77,8 @@ class FMoETransformerMLP(FMoE):
             self.merge_layer = nn.Linear(hidden_size, hidden_size)
             nn.init.xavier_uniform_(self.merge_layer.weight)
             nn.init.constant_(self.merge_layer.bias, 0.0)
+        
+        self.mark_parallel_comm(expert_dp_comm)
     
     def forward(self, inp): 
         original_shape = inp.shape
