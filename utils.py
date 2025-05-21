@@ -1,84 +1,277 @@
+import os, sys
+import argparse
+import math, random
+import functools
+import os, shutil
+import torch
+import tqdm
+from gates import CustomNaiveGate_Balance_SMoE, MHMoEGate
 import wandb
-from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
-import matplotlib.pyplot as plt
 
-def get_data(ds_name, batch_size):
-    if ds_name == "mnist":
-        num_channel, img_size = 1, 28
-        num_classes = 10
 
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.1307,), (0.3081,))
-        ])
+def logging(s, log_path, print_=True, log_=True):
+    if print_:
+        print(s)
+    if log_:
+        with open(log_path, "a+") as f_log:
+            f_log.write(s + "\n")
 
-        train_dataset = datasets.MNIST("./data", train = True, download = True, transform = transform)
-        test_dataset = datasets.MNIST("./data", train = False, transform = transform)
-    elif ds_name == "cifar10":
-        num_channel, img_size = 3, 32
-        num_classes = 10
-        
-        transform_train = transforms.Compose([
-            transforms.RandomCrop(32, padding=4),
-            transforms.RandomHorizontalFlip(),
-            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-            transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
-        ])
-        
-        # Test transforms without augmentation
-        transform_test = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
-        ])
-    
-        train_dataset = datasets.CIFAR10("./data", train=True, download=True, transform=transform_train)
-        test_dataset = datasets.CIFAR10("./data", train=False, transform=transform_test)
+
+def get_logger(log_path, **kwargs):
+    return functools.partial(logging, log_path=log_path, **kwargs)
+
+
+def create_exp_dir(dir_path, scripts_to_save=None, debug=False):
+    if debug:
+        print("Debug Mode : no experiment dir created")
+        return functools.partial(logging, log_path=None, log_=False)
+
+    if not os.path.exists(dir_path):
+        os.makedirs(dir_path, exist_ok=True)
+
+    print("Experiment dir : {}".format(dir_path))
+    if scripts_to_save is not None:
+        script_path = os.path.join(dir_path, "scripts")
+        if not os.path.exists(script_path):
+            os.makedirs(script_path)
+        for script in scripts_to_save:
+            dst_file = os.path.join(dir_path, "scripts", os.path.basename(script))
+            shutil.copyfile(script, dst_file)
+
+    return get_logger(log_path=os.path.join(dir_path, "log.txt"))
+
+
+def freeze_gate_weight(model):
+    """Freeze the router/gate weights in the model"""
+    print("* Freezing Router Weights")
+    for name, p in model.named_parameters():
+        if "gate.gate" in name:
+            print("Freeze: ", name)
+            p.requires_grad = False
+
+
+def _parse_args(params_config, args):
+    parser = argparse.ArgumentParser()
+    for params_category in params_config:  # e.g., 'model_params'
+        for param_flag, param_config in params_config[params_category].items():
+            # e.g., param_flag = '--block-sz'
+            parser.add_argument(param_flag, **param_config)
+    return parser.parse_args(args)
+
+
+def get_params(params_config, args=None):
+    namespace = _parse_args(params_config, args)
+    return {
+        params_category: {
+            param_config["dest"]: namespace.__getattribute__(param_config["dest"])
+            for param_config in params_config[params_category].values()
+        }
+        for params_category in params_config
+    }
+
+
+##############################################################################
+# ENVIRONMENT
+##############################################################################
+
+
+def _torch_distributed_init_process_group(local_rank):
+    torch.distributed.init_process_group(backend="nccl", init_method="env://")
+    rank = torch.distributed.get_rank()
+    world_size = torch.distributed.get_world_size()
+    print("my rank={} local_rank={}".format(rank, local_rank))
+    torch.cuda.set_device(local_rank)
+    return {
+        "rank": rank,
+        "world_size": world_size,
+    }
+
+
+def set_up_env(env_params):
+    assert torch.cuda.is_available()
+    if env_params["distributed"]:
+        env_params.update(
+            _torch_distributed_init_process_group(local_rank=env_params["local_rank"])
+        )
+    env_params["device"] = torch.device("cuda")
+
+
+##############################################################################
+# OPTIMIZER AND SCHEDULER
+##############################################################################
+
+
+def _get_grad_requiring_params(model):
+    nb_parameters = 0
+    grad_requiring_params = []
+    for param in model.parameters():
+        if param.requires_grad:
+            nb_parameters += param.numel()
+            grad_requiring_params.append(param)
+    print("nb_parameters={:.2f}M".format(nb_parameters / 1e6))
+    return grad_requiring_params
+
+
+def _get_optimizer(model, optim, lr, momentum=0.0, grad_clip=0.0):
+    if optim == "sgd":
+        return torch.optim.SGD(
+            _get_grad_requiring_params(model), lr=lr, momentum=momentum
+        )
+    elif optim == "adam":
+        return torch.optim.Adam(
+            _get_grad_requiring_params(model),
+            lr=lr,
+        )
     else:
-        raise ValueError(f"Unsupported dataset: {ds_name}")
-    
-    input_size = num_channel * img_size * img_size
-    
-    train_loader = DataLoader(train_dataset, batch_size = batch_size, shuffle = True)
-    test_loader = DataLoader(test_dataset, batch_size = batch_size, shuffle = False)
-
-    return train_loader, test_loader, input_size, num_classes
+        raise RuntimeError("wrong type of optimizer - must be 'sgd' or 'adam'")
 
 
-class EarlyStopping:
-    def __init__(self, patience = 5, delta = 0):
-        self.patience = patience
-        self.delta = delta
-        self.best_loss = None
-        self.no_improvement = 0
-        self.stop_training = False
+def _get_scheduler(optimizer, lr_warmup):
+    if lr_warmup > 0:
+        return torch.optim.lr_scheduler.LambdaLR(
+            optimizer, lambda ep: min(1, ep / lr_warmup)
+        )
+    return None
+
+
+def get_optimizer_and_scheduler(model, optim_params):
+    # Handling missing parameters with defaults
+    momentum = optim_params.get("momentum", 0.0)
+    grad_clip = optim_params.get("grad_clip", 0.0)
     
-    def check(self, new_loss):
-        if self.best_loss is None or new_loss < self.best_loss - self.delta:
-            self.best_loss = new_loss
-            self.no_improvement = 0
+    optimizer = _get_optimizer(
+        model=model,
+        optim=optim_params["optim"],
+        lr=optim_params["lr"],
+        momentum=momentum,
+        grad_clip=grad_clip,
+    )
+    scheduler = _get_scheduler(optimizer=optimizer, lr_warmup=optim_params.get("lr_warmup", 0))
+    return optimizer, scheduler
+
+
+##############################################################################
+# CHECKPOINT
+##############################################################################
+
+
+def _load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distributed):
+    print("loading from a checkpoint at {}".format(checkpoint_path))
+    if distributed:
+        # the model is saved from gpu0 so we need to map it to CPU first
+        checkpoint_state = torch.load(
+            checkpoint_path, map_location=lambda storage, loc: storage
+        )
+    else:
+        checkpoint_state = torch.load(checkpoint_path)
+    iter_init = checkpoint_state["nb_batches_per_iter"] + 1  # next iteration
+    model.load_state_dict(checkpoint_state["model"])
+    optimizer.load_state_dict(checkpoint_state["optimizer"])
+    if scheduler is not None and "scheduler_iter" in checkpoint_state:
+        # we only need the step count
+        scheduler.step(checkpoint_state["scheduler_iter"])
+    return iter_init
+
+
+def load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distributed, resume, wandb_params):
+    if resume:
+        run_id = wandb_params.get("run_id", None)
+        wandb.init(project=wandb_params["project_name"], id = run_id, resume = "allow")
+        wandb_flag = wandb_params.get("wandb_flag", False)
+        if os.path.exists(checkpoint_path):
+            return _load_checkpoint(
+                checkpoint_path=checkpoint_path,
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                logger=logger,
+                distributed=distributed,
+            )
+        elif wandb_flag:
+            print("Local checkpoint not found, attempting to download from wandb")
+            artifact = wandb.use_artifact(f"{wandb.run.name}:latest", type = "model")
+            
+            artifact_dir = artifact.download(root = os.path.dirname(checkpoint_path))
+            checkpoint_path = os.path.join(artifact_dir, os.path.basename(checkpoint_path))
+            return _load_checkpoint(
+                checkpoint_path=checkpoint_path,
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                logger=logger,
+                distributed=distributed,
+            )
         else:
-            self.no_improvement +=1
-            if self.no_improvement > self.patience:
-                self.stop_training = True
+            print("Failed to load checkpoint")
+    return 0
 
-def make_wandb_table(
-    train_losses,
-    train_accs,
-    test_losses,
-    test_accs,
-    run_name
-):  
-    columns = ["Model", "Best Test Accuracy", "Final Train Accuracy", "Final Train Loss", "Final Test Loss"]
-    data = [
-        [
-            run_name,
-            max(test_accs),
-            train_accs[-1],
-            train_losses[-1], 
-            test_losses[-1]
-        ]
-    ]
-    results_table = wandb.Table(columns = columns, data = data)
-    wandb.log({"results_summary": results_table})
+
+def save_checkpoint(
+    checkpoint_path, nb_batches_per_iter, model, optimizer, scheduler, wandb_flag, wandb_checkpoints
+):
+    if checkpoint_path:
+        checkpoint_state = {
+            "nb_batches_per_iter": nb_batches_per_iter,  # last completed iteration
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+        }
+        if scheduler is not None:
+            checkpoint_state["scheduler_iter"] = scheduler.last_epoch
+        torch.save(checkpoint_state, checkpoint_path)
+
+        if wandb_flag and wandb_checkpoints:
+            model_artifact = wandb.Artifact(
+                name = wandb.run.name,
+                type = "model"
+            )
+
+            model_artifact.add_file(checkpoint_path)
+            wandb.log_artifact(model_artifact)
+
+
+##############################################################################
+# LOGGER
+##############################################################################
+
+
+class Logger:
+    def __init__(self):
+        self._state_dict = dict()
+
+    def load_state_dict(self, state_dict):
+        self._state_dict = state_dict
+
+    def state_dict(self):
+        return self._state_dict
+
+    def _log(self, title, value):
+        if title not in self._state_dict:
+            self._state_dict[title] = []
+        self._state_dict[title].append(value)
+
+    def log_iter(
+        self, iter_no, nb_batches_per_iter, loss_train, loss_val, elapsed, model
+    ):
+        step = (iter_no + 1) * nb_batches_per_iter
+        train_bpc = float(loss_train / math.log(2))
+        val_bpc = float(loss_val / math.log(2))
+        msg = "steps: {}".format(step)
+        msg += "\ttrain: {:.3f}bpc\tval: {:.3f}bpc".format(train_bpc, val_bpc)
+        msg += "\tms/batch: {:.1f}".format(elapsed)
+        self._log(title="step", value=step)
+        self._log(title="train_bpc", value=train_bpc)
+        self._log(title="val_bpc", value=val_bpc)
+
+        # Log MoE-specific information if available
+        moe_stats = []
+        for name, m in model.named_modules():
+            if isinstance(m, CustomNaiveGate_Balance_SMoE) or isinstance(m, MHMoEGate):
+                if hasattr(m, 'loss') and m.loss is not None:
+                    moe_stats.append(m.loss.item())
+        
+        if moe_stats:
+            avg_moe_loss = sum(moe_stats) / len(moe_stats)
+            self._log("moe_balance_loss", avg_moe_loss)
+            msg += "\tmoe_balance_loss: {:.5f}".format(avg_moe_loss)
+
+        print(msg)

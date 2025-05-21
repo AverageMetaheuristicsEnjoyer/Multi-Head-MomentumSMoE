@@ -1,360 +1,563 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from custom_transformer import FMoETransformerMLP
+from gates import CustomNaiveGate_Balance_SMoE, MHMoEGate
 
-from gates import TopKGate
-from experts import FeedForwardExpert
+# Size notations:
+# B = batch_size, H = hidden_size, M = block_size, L = attn_span
 
-# TODO: add commentaries to lines where permuting dimensions of a tensor
-# e.g. in reshape: [dim_1, dim_2, dim_3] --> [dim_1, dim_2 / dim_3]
+def _skew(X, pad_value):
+    """shift every row one step to the right"""
+    # X = B x M x L
+    B, M, L = X.size()
+    X = F.pad(X, (0, M + 1), value = pad_value) # B x M x (M + L + 1)
+    X = X.view(B, -1) # B x (ML + MM + M)
+    X = X[:, :-M] # B x (ML + MM)
+    X = X.view(B, M, M + L) # B x M x (L + M)
+    return X
 
-# TODO?: add references to the formulas for better navigation
+def _unskew(X):
+    """reverse _skew operation"""
+    # X = B x M x (M + L)
+    B, M, L = X.size()
+    L -= M
+    X = X.view(B, -1)  # B x (ML + MM)
+    X = F.pad(X, (0, M))  # B x (ML + MM + M)
+    X = X.view(B, M, M + L + 1)  # B x M x (L + M + 1)
+    X = X[:, :, :L]  # B x M x L
+    return X
 
-class MomentumLayer(nn.Module):
+class SeqAttention(nn.Module):
     def __init__(
         self,
-        input_dim,
-        hidden_dim,
-        output_dim,
-        num_experts,
-        moe_top_k = 2,
-        dropout = 0.1,
-        mu = 0.7,
-        gamma = 1.0
+        hidden_size,
+        attn_span,
+        dropout
     ):
         super().__init__()
-        self.input_dim = input_dim
-        self.output_dim = output_dim
-        self.num_experts = num_experts
-        self.mu = mu
-        self.gamma = gamma
+        self.hidden_size = hidden_size
+        self.attn_span = attn_span
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, query, key, value, pos_encoding):
+        # query size = B x M x H
+        # key, value sizes = B x (M + L) x H
 
-        self.experts = nn.ModuleList([
-            FeedForwardExpert(
-                input_dim,
-                hidden_dim,
-                output_dim,
-                dropout,
-            )
-            for _ in range(num_experts)
-        ])
+        # B x M (q) x (M + L) (k)
+        attn_ctx = torch.matmul(query, key.transpose(-1, -2))
+        attn_ctx = _unskew(attn_ctx) # B x M x L
 
-        self.gate = TopKGate(input_dim, num_experts, moe_top_k)
-        self.layer_norm = nn.LayerNorm(output_dim)
+        attn_pos = torch.matmul(query, pos_encoding) # B x M x L_pos
+        attn = attn_ctx + attn_pos
+
+        attn = attn / math.sqrt(self.hidden_size) # B x M x L_pos
+        attn = F.softmax(attn, dim = -1)
+        attn = self.dropout(attn)
+
+        attn_ctx = _skew(attn, 0) # B x M x (L + M)
+        out = torch.matmul(attn_ctx, value) # B x M x H
+        return out
+
+    def get_cache_size(self):
+        return self.attn_span
+
+class MultiHeadSeqAttention(nn.Module):
+    def __init__(
+        self,
+        hidden_size,
+        num_heads,
+        dropout,
+        attn_span,
+    ):
+        super().__init__()
+        assert hidden_size % num_heads == 0
+        self.num_heads = num_heads
+        self.head_dim = hidden_size // num_heads
+        self.attn = SeqAttention(
+            hidden_size = hidden_size,
+            dropout = dropout,
+            attn_span = attn_span,
+        )
+        self.proj_query = nn.Linear(hidden_size, hidden_size, bias = False)
+        self.proj_val = nn.Linear(hidden_size, hidden_size, bias = False)
+        self.proj_key = nn.Linear(hidden_size, hidden_size, bias = False)
+        self.proj_out = nn.Linear(hidden_size, hidden_size, bias = False)
+
+    def head_reshape(self, x):
+        K = self.num_heads
+        D = self.head_dim
+        x = x.view(x.size()[:-1] + (K, D)) # B x (M + L) x K x D
+        x = x.transpose(1, 2).contiguous() # B x K x (M + L) x D
+        x = x.view(-1, x.size(-2), x.size(-1)) # B_K x (M + L) x D
+        return x
+
+    def forward(self, query, key, value, pos_encoding):
+        B = query.size(0)
+        K = self.num_heads
+        D = self.head_dim
+        M = query.size(1)
+
+        query = self.proj_query(query)
+        query = self.head_reshape(query)
+        value = self.proj_val(value)
+        value = self.head_reshape(value)
+        key = self.proj_key(key)
+        key = self.head_reshape(key)
+
+        out = self.attn(query, key, value, pos_encoding) # B_K x M x D
+        out = out.view(B, K, M, D) # B x K x M x D
+        out = out.transpose(1, 2).contiguous() # B x M x K x D
+        out = out.view(B, M, -1) # B x M x K_D
+        out = self.proj_out(out)
+        return out
+
+class FeedForwardLayer(nn.Module):
+    def __init__(self, hidden_size, inner_hidden_size, dropout, **kargs):
+        nn.Module.__init__()
+        self.fc1 = nn.Linear(hidden_size, inner_hidden_size)
+        self.fc2 = nn.Linear(inner_hidden_size, hidden_size)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, momentum):
-        gates, _, lb_loss = self.gate(x)
+    def forward(self, h):
+        h1 = F.relu(self.fc1(h))
+        h1 = self.dropout(h1)
+        h2 = self.fc2(h1)
+        return h2
 
-        expert_outputs = torch.zeros_like(x)
-        for i, expert in enumerate(self.experts):
-            expert_out = expert(x)
-            expert_outputs += gates[..., i:i+1] * expert_out
-        expert_outputs = self.dropout(expert_outputs)
-
-        momentum = self.mu * momentum + self.gamma * expert_outputs
-        output = x - momentum
-
-        output = self.layer_norm(output)
-
-        return output, momentum, lb_loss
-
-class AdamLayer(nn.Module):
+class MomentumLayer(FMoETransformerMLP):
     def __init__(
         self,
-        input_dim,
-        hidden_dim,
-        output_dim,
+        hidden_size,
+        inner_hidden_size,
+        dropout,
+        gate,
         num_experts,
-        moe_top_k = 2,
-        dropout = 0.1,
-        mu = 0.7,
-        gamma1 = 1.0,
-        gamma2 = 1.0,
-        beta1 = 0.9,
-        beta2 = 0.999,
-        layerth = 0
+        moe_top_k,
+        mhmoe_num_heads,
+        mhmoe_beta,
+        gamma,
+        mu,
+        world_size,
     ):
-        super().__init__()
-        self.input_dim = input_dim
-        self.output_dim = output_dim
-        self.num_experts = num_experts
+        activation = nn.Sequential(nn.ReLU(), nn.Dropout(dropout))
+        super().__init__(   
+            hidden_size = hidden_size,
+            inner_hidden_size = inner_hidden_size,
+            activation = activation,
+            gate = gate,
+            num_experts = num_experts,
+            moe_top_k = moe_top_k,
+            mhmoe_num_heads = mhmoe_num_heads,
+            mhmoe_beta = mhmoe_beta,
+            world_size = world_size,
+        )
+        self.gamma = gamma
         self.mu = mu
+        self.dropout = nn.Dropout(dropout)
+        # self.layer_norm = nn.LayerNorm(hidden_size)
+
+
+    def forward(self, inp, momentum):
+        moe_out = super().forward(inp)
+        moe_out = self.dropout(moe_out)
+
+        momentum = self.mu * momentum + self.gamma * moe_out
+        # output = self.layer_norm(inp - momentum)
+        output = inp - momentum
+        return output, momentum
+
+class AdamLayer(FMoETransformerMLP):
+    def __init__(
+        self,
+        hidden_size,
+        inner_hidden_size,
+        dropout,
+        gate,
+        num_experts,
+        moe_top_k,
+        mhmoe_num_heads,
+        mhmoe_beta,
+        gamma1,
+        gamma2,
+        mu,
+        world_size,
+        beta1,
+        beta2,
+        layerth,
+    ):
+        activation = nn.Sequential(nn.ReLU(), nn.Dropout(dropout))
+        super().__init__(
+            hidden_size = hidden_size,
+            inner_hidden_size = inner_hidden_size,
+            activation = activation,
+            gate = gate,
+            num_experts = num_experts,
+            moe_top_k = moe_top_k,
+            mhmoe_num_heads = mhmoe_num_heads,
+            mhmoe_beta = mhmoe_beta,
+            world_size = world_size,
+        )
         self.gamma1 = gamma1
         self.gamma2 = gamma2
+        self.mu = mu
         self.beta1 = beta1
         self.beta2 = beta2
         self.layerth = layerth
-
-        self.experts = nn.ModuleList([
-            FeedForwardExpert(
-                input_dim,
-                hidden_dim,
-                output_dim,
-                dropout,
-            )
-            for _ in range(num_experts)
-        ])
-
-        self.gate = TopKGate(input_dim, num_experts, moe_top_k)
-        self.layer_norm = nn.LayerNorm(output_dim)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, moment):
-        gates, _, lb_loss = self.gate(x)
-
-        expert_outputs = torch.zeros_like(x)
-        for i, expert in enumerate(self.experts):
-            expert_out = expert(x)
-            expert_outputs += gates[..., i:i + 1] * expert_out
-        expert_outputs = self.dropout(expert_outputs)
+    def forward(self, inp, momentum):
+        moe_out = super().forward(inp)
+        moe_out = self.dropout(moe_out)
         
         if self.layerth == 0:
-            momentum = self.mu * moment[2] + self.gamma2 * expert_outputs
-            p = moment[0]
-            v = moment[1]
-            p = self.beta1 * p + (1 - self.beta1) * expert_outputs
-            v = self.beta2 * v + (1 - self.beta2) * (expert_outputs ** 2)
-            adam = (self.gamma1 / torch.sqrt(v + 1e-8)) * p + x
+            p = momentum[0]
+            v = momentum[1]
+            momentum = self.mu * momentum[2] + self.gamma2 * moe_out
 
-            output = self.layer_norm(x - adam)
-        
+            p = self.beta1 * p + (1 - self.beta1) * moe_out
+            v = self.beta2 * v + (1 - self.beta2) * (moe_out ** 2)
+            adam = (self.gamma1 / torch.sqrt(v + 1e-8)) * p + inp
+            output = inp - adam  
         else:
-            p = moment[0]
-            v = moment[1]
-            momentum = self.mu * moment[2] + self.gamma2 * expert_outputs
-            output = self.layer_norm(x - momentum)
+            p = momentum[0]
+            v = momentum[1]
+            momentum = self.mu * momentum[2] + self.gamma2 * moe_out
+            # output = self.layer_norm(inp - momentum)
+            output = inp - momentum
+        
+        return output, (p, v, momentum)
 
-        return output, (p, v, momentum), lb_loss
+def linear_warmup_scheduler(step, alpha_end, alpha_start=0, warmup=1):
+    if step < warmup:
+        a = step / float(warmup)
+        return (1.0-a) * alpha_start + a * alpha_end
+    return alpha_end
 
-class MultiHeadSplitLayer(nn.Module):
-    def __init__(self, input_dim, num_heads):
-        super().__init__()
-        self.input_dim = input_dim
-        self.num_heads = num_heads
-        self.head_dim = input_dim // num_heads
-        self.multi_head_proj = nn.Linear(input_dim, input_dim)
+def linear_hl_warmup_scheduler(step, beta_end, beta_start=0, warmup=1):
 
-    def forward(self, x):
-        batch_size, seq_len, _ = x.shape
+    def f(beta, eps=1e-8):
+        return math.log(0.5)/math.log(beta+eps)-1
 
-        N = batch_size * seq_len
-        x_reshaped = self.multi_head_proj(x).reshape(N, self.num_heads, self.head_dim).contiguous()
-        x_reshaped = x_reshaped.reshape(N * self.num_heads, self.head_dim).contiguous()
+    def f_inv(t):
+        return math.pow(0.5, 1/(t+1))
 
-        return x_reshaped, N
+    if step < warmup:
+        a = step / float(warmup)
+        return f_inv((1.0-a) * f(beta_start) + a * f(beta_end))
+    return beta_end
 
-class MultiHeadMergeLayer(nn.Module):
-    def __init__(self, input_dim, num_heads):
-        super().__init__()
-        self.input_dim = input_dim
-        self.num_heads = num_heads
-        self.head_dim = input_dim // num_heads
-        self.merge_proj = nn.Linear(input_dim, input_dim)
-
-    def forward(self, x, N):
-        x_merged = x.reshape(N, self.num_heads, self.head_dim)
-        x_merged = x.reshape(N, self.input_dim).contiguous()
-        x_merged = self.merge_proj(x_merged)
-
-        return x_merged
-
-class MultiHeadMomentumLayer(nn.Module):
+class AdEMAMixLayer(FMoETransformerMLP):
     def __init__(
         self,
-        input_dim,
-        hidden_dim,
-        num_experts,
-        num_heads,
-        moe_top_k = 2,
-        dropout = 0.1,
-        mu = 0.7,
-        gamma1 = 1.0,
-        gamma2 = 1.0,
-        beta1 = 0.9,
-        beta2 = 0.999,
-        mom_type = "heavy-ball",
-        layerth = 0
-    ):
-        super().__init__()
-        self.input_dim = input_dim
-        self.num_heads = num_heads
-        self.head_dim = input_dim // num_heads
-        self.head_hid_dim = hidden_dim // num_heads
-
-        self.split_layer = MultiHeadSplitLayer(input_dim, num_heads)
-        
-        if mom_type == "adam":
-            self.moe_layer = AdamLayer(
-                input_dim = self.head_dim,
-                hidden_dim = self.head_hid_dim,
-                output_dim = self.head_dim,
-                num_experts = num_experts,
-                moe_top_k = moe_top_k,
-                dropout = dropout,
-                mu = mu,
-                gamma1 = gamma1,
-                gamma2 = gamma2,
-                beta1 = beta1,
-                beta2 = beta2,
-                layerth = layerth
-            )
-        else:
-            self.moe_layer = MomentumLayer(
-                input_dim = self.head_dim,
-                hidden_dim = self.head_hid_dim,
-                output_dim = self.head_dim,
-                num_experts = num_experts,
-                moe_top_k = moe_top_k,
-                dropout = dropout,
-                mu = mu,
-                gamma = gamma2
-            )
-        self.merge_layer = MultiHeadMergeLayer(input_dim, num_heads)
-
-    def forward(self, x, momentum = None):
-        batch_size, seq_len, _ = x.shape
-
-        sub_tokens, N = self.split_layer(x)
-
-        if isinstance(momentum, tuple) and len(momentum) == 3:
-            if momentum[0] is None:
-                momentum = (torch.zeros_like(sub_tokens), 
-                            torch.zeros_like(sub_tokens),
-                            torch.zeros_like(sub_tokens))
-
-        else:
-            if momentum is None:
-                momentum = torch.zeros_like(sub_tokens)
-            
-        moe_output, momentum, lb_loss = self.moe_layer(sub_tokens, momentum)
-
-        merged_output = self.merge_layer(moe_output, N)
-        merged_output = merged_output.reshape(batch_size, seq_len, -1)
-
-        return merged_output, momentum, lb_loss
-
-# "Replacement" of the multi-head attention block in a layer (multi-head attention + MoE)
-# since experiments're on the early stage
-class FeedForward(nn.Module):
-    def __init__(
-        self,
-        input_dim,
-        hidden_dim,
-        output_dim,
-        dropout = 0.1
-    ):
-        super().__init__()
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, output_dim)
-        self.dropout = nn.Dropout(dropout)
-        self.layer_norm = nn.LayerNorm(output_dim)
-        
-    def forward(self, x):
-        identity = x
-        x = F.gelu(self.fc1(x))
-        x = self.dropout(x)
-        x = self.fc2(x)
-        x = self.layer_norm(x + identity)
-        return x
-
-class MHMomentumSMoE(nn.Module):
-    def __init__(
-        self,
-        input_size,
         hidden_size,
         inner_hidden_size,
-        num_classes,
+        dropout,
+        gate,
         num_experts,
+        moe_top_k,
+        mhmoe_num_heads,
+        mhmoe_beta,
+        alpha,
+        beta1,
+        beta2,
+        beta3,
+        t_warmup,
+        world_size,
+        # weight_decay,
+    ):
+        activation = nn.Sequential(nn.ReLU(), nn.Dropout(dropout))
+        super().__init__(
+            hidden_size = hidden_size,
+            inner_hidden_size = inner_hidden_size,
+            activation = activation,
+            gate = gate,
+            num_experts = num_experts,
+            moe_top_k = moe_top_k,
+            mhmoe_num_heads = mhmoe_num_heads,
+            mhmoe_beta = mhmoe_beta,
+            world_size = world_size,
+        )
+        self.alpha = alpha
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.beta3 = beta3
+        self.t_warmup = t_warmup
+        # self.weight_decay = weight_decay
+
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, inp, momentum):
+        m1, v, m2, step_count = momentum
+        step_count += 1
+        step = step_count.item()
+
+        alpha_t = linear_warmup_scheduler(step, alpha_end = self.alpha, alpha_start = 0, warmup = self.t_warmup)
+        beta3_t = linear_hl_warmup_scheduler(step, self.beta3, beta_start = self.beta1, warmup = self.t_warmup)
+
+        moe_out = super().forward(inp)
+        moe_out = self.dropout(moe_out)
+
+        m1_new = self.beta1 * m1 + (1 - self.beta1) * moe_out
+        v_new = self.beta2 * v + (1 - self.beta2) * (moe_out ** 2)
+        m2_new = beta3_t * m2 + (1 - beta3_t) * moe_out
+        
+        bias_correction1 = 1.0 - self.beta1 ** step
+        bias_correction2 = 1.0 - self.beta2 ** step
+        m1_hat = m1_new / bias_correction1
+        v_hat = v_new / bias_correction2
+        
+        combined_m = m1_hat + alpha_t * m2_new
+        
+        denom = torch.sqrt(v_hat + 1e-8)
+        update = combined_m / denom
+        
+        # if self.weight_decay > 0:
+        #     update = update + self.weight_decay * inp
+            
+        output = inp - update
+        
+        return output, (m1_new, v_new, m2_new, step_count)
+
+class TransformerSeqLayer(nn.Module):
+    def __init__(
+        self,
+        hidden_size,
+        inner_hidden_size,
         num_heads,
-        num_layers,
-        moe_top_k = 2,
-        dropout = 0.1,
-        mu = 0.7,
-        gamma1 = 1.0,
-        gamma2 = 1.0,
-        beta1 = 0.9,
-        beta2 = 0.999,
-        mom_type = "heavy-ball",
-        alpha = 0.01
+        attn_span,
+        dropout,
+        gate_name,
+        num_experts,
+        moe_top_k,
+        mhmoe_num_heads,
+        mhmoe_beta,
+        gamma1,
+        gamma2,
+        mu,
+        alpha,
+        beta1,
+        beta2,
+        beta3,
+        t_warmup,
+        # weight_decay,
+        world_size,
+        s,
+        g,
+        f,
+        layerth,
     ):
         super().__init__()
-        self.num_layers = num_layers
-        self.mom_type = mom_type
-        self.alpha = alpha
-
-        # just for not sending num_channels through the argument
-        self.num_channels = 1 if input_size <= 28*28*3 else 3
-        self.img_size = int((input_size / self.num_channels) ** 0.5)
-
-        self.inp_embed = nn.Sequential(
-            nn.Conv2d(self.num_channels, 16, kernel_size = 3, padding = 1),
-            nn.BatchNorm2d(16),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(16, 32, kernel_size = 3, padding = 1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(),
-            nn.MaxPool2d(2)
+        if gate_name == "smoe":
+            gate = CustomNaiveGate_Balance_SMoE # from SwitchTransformer paper
+        elif gate_name == "mhmoe":
+            gate = MHMoEGate
+        else:
+            ValueError("Incorrect gate name")
+        
+        self.use_attn = s == "s"
+        self.attn = (
+            MultiHeadSeqAttention(
+                hidden_size = hidden_size,
+                num_heads = num_heads,
+                dropout = dropout,
+                attn_span = attn_span,
+            )
+            if self.use_attn
+            else None
+        )
+        
+        self.use_smoe = g in ["m", "a", "e"]
+        self.smoe = (
+            MomentumLayer(
+                hidden_size = hidden_size,
+                inner_hidden_size = inner_hidden_size,
+                dropout = dropout,
+                gate = gate,
+                num_experts = num_experts,
+                moe_top_k = moe_top_k,
+                mhmoe_num_heads = mhmoe_num_heads,
+                mhmoe_beta = mhmoe_beta,
+                gamma = gamma2,
+                mu = mu,
+                world_size = world_size,
+            )
+            if g == "m"
+            else
+            AdamLayer(
+                hidden_size = hidden_size,
+                inner_hidden_size = inner_hidden_size,
+                dropout = dropout,
+                gate = gate,
+                num_experts = num_experts,
+                moe_top_k = moe_top_k,
+                mhmoe_num_heads = mhmoe_num_heads,
+                mhmoe_beta = mhmoe_beta,
+                gamma1 = gamma1,
+                gamma2 = gamma2,
+                mu = mu,
+                world_size = world_size,
+                beta1 = beta1,
+                beta2 = beta2,
+                layerth = layerth,
+            )
+            if g == "a"
+            else
+            AdEMAMixLayer(
+                hidden_size = hidden_size,
+                inner_hidden_size = inner_hidden_size,
+                dropout = dropout,
+                gate = gate,
+                num_experts = num_experts,
+                moe_top_k = moe_top_k,
+                mhmoe_num_heads = mhmoe_num_heads,
+                mhmoe_beta = mhmoe_beta,
+                alpha = alpha,
+                beta1 = beta1,
+                beta2 = beta2,
+                beta3 = beta3,
+                t_warmup = t_warmup,
+                world_size = world_size,
+                # weight_decay = weight_decay,
+            )
+            if g == "e"
+            else None
         )
 
-        self.feature_map_size = (self.img_size // 4) ** 2
-        self.conv_output_size = self.feature_map_size * 32
-
-        self.proj = nn.Linear(self.conv_output_size, hidden_size)
-        
-        self.ffn_layers = nn.ModuleList()
-        self.moe_layers = nn.ModuleList()
-        
-        for i in range(self.num_layers):
-            self.ffn_layers.append(
-                FeedForward(hidden_size, hidden_size * 4, hidden_size, dropout)
+        self.use_ff = f == "f"
+        self.ff = (
+            FeedForwardLayer(
+                hidden_size = hidden_size,
+                inner_hidden_size = inner_hidden_size,
+                dropout = dropout,
             )
-            
-            self.moe_layers.append(
-                MultiHeadMomentumLayer(
-                    input_dim = hidden_size,
-                    hidden_dim = inner_hidden_size,
-                    num_experts = num_experts,
-                    num_heads = num_heads,
-                    moe_top_k = moe_top_k,
-                    dropout = dropout,
-                    mu = mu,
-                    gamma1 = gamma1,
-                    gamma2 = gamma2,
-                    beta1 = beta1,
-                    beta2 = beta2,
-                    mom_type = self.mom_type,
-                    layerth = i,
+            if self.use_ff
+            else None
+        )
+
+        self.norm1 = nn.LayerNorm(hidden_size)
+        self.norm2 = nn.LayerNorm(hidden_size)
+        self.norm3 = nn.LayerNorm(hidden_size)
+    
+    def forward(self, h, h_cache, pos_encoding, momentum):
+        # h = B x M x H
+        # h_cache = B x L x H
+        if self.use_attn:
+            h_all = torch.cat([h_cache, h], dim = 1) # B x (M + L) x H
+            attn_out = self.attn(h, h_all, h_all, pos_encoding)
+            h = self.norm1(h + attn_out) # B x M x H
+        if self.use_smoe:
+            smoe_out, momentum = self.smoe(h, momentum)
+            h = self.norm2(h + smoe_out) # B x M x H
+        if self.use_ff:
+            ff_out = self.ff(h)
+            h = self.norm3(h + ff_out) # B x M x H
+        return h, momentum
+
+class TransformerSeq(nn.Module):
+    def __init__(
+        self,
+        vocab_size,
+        hidden_size,
+        inner_hidden_size,
+        num_heads,
+        num_layers,
+        attn_span,
+        architecture,
+        dropout,
+        gate_name,
+        num_experts,
+        moe_top_k,
+        mhmoe_num_heads,
+        mhmoe_beta,
+        gamma1,
+        gamma2,
+        mu,
+        alpha,
+        beta1,
+        beta2,
+        beta3,
+        t_warmup,
+        # weight_decay,
+        world_size,
+        **kwargs,
+    ):
+        super().__init__()
+        self.inp_embed = nn.Embedding(vocab_size, hidden_size)
+        self.out_embed = nn.Linear(hidden_size, vocab_size)
+
+        self.pos_encoding = nn.Parameter(torch.randn(1, hidden_size // num_heads, attn_span))
+        self.arch = architecture
+
+        self.attn_layer_count = self.arch.count("s")
+        self.layers = nn.ModuleList()
+
+        self.layers.extend(
+            TransformerSeqLayer(
+                hidden_size = hidden_size,
+                inner_hidden_size = inner_hidden_size,
+                num_heads = num_heads,
+                attn_span = attn_span,
+                dropout = dropout,
+                gate_name = gate_name,
+                num_experts = num_experts,
+                moe_top_k = moe_top_k,
+                mhmoe_num_heads = mhmoe_num_heads,
+                mhmoe_beta = mhmoe_beta,
+                gamma1 = gamma1,
+                gamma2 = gamma2,
+                mu = mu,
+                alpha = alpha,
+                beta1 = beta1,
+                beta2 = beta2,
+                beta3 = beta3,
+                t_warmup = t_warmup,
+                # weight_decay = weight_decay,
+                world_size = world_size,
+                s = self.arch[2 * i],
+                g = self.arch[2 * i + 1],
+                f = None,
+                layerth = i
+            )
+            for i in range(num_layers)
+        )
+    
+    def forward(self, x, h_cache):
+        block_size = x.size(1) # B x M
+        h = self.inp_embed(x) # B x M x H
+        h_cache_next = []
+        if "e" in self.arch:
+            momentum = (
+                torch.zeros_like(h),
+                torch.zeros_like(h),
+                torch.zeros_like(h),
+                torch.zeros(1, device = h.device, dtype = torch.long)
+            )
+        elif "a" in self.arch:
+            momentum = (
+                torch.zeros_like(h),
+                torch.zeros_like(h),
+                torch.zeros_like(h),
                 )
-            )
-
-        self.out_embed = nn.Linear(hidden_size, num_classes)
-
-    def forward(self, x):
-        batch_size = x.shape[0]
-
-        x = self.inp_embed(x)
+        else: # in case of no momentum --mu will be set to zero
+            momentum = torch.zeros_like(h)
         
-        x = x.view(batch_size, -1)
-        x = self.proj(x)
+        for i, layer in enumerate(self.layers):
+            if layer.use_attn:
+                cache_size = layer.attn.attn.get_cache_size()
+                if cache_size > block_size:
+                    h_cache_next_l = torch.cat(
+                        [h_cache[i][:, -cache_size + block_size:, :], h],
+                        dim = 1
+                    ).detach()
+                else:
+                    h_cache_next_l = h[:, -cache_size:, :].detach()
+                h_cache_next.append(h_cache_next_l)
+                h, momentum = layer(h, h_cache[i], self.pos_encoding, momentum) # B x M x H
+            else:
+                # TODO: is this branch even necesarry in our case?
+                h = layer(h, [], self.pos_encoding)
         
-        x = x.unsqueeze(1)  # [batch_size, 1, hidden_size]
-        
-        if self.mom_type == "adam":
-            momentum_list = [(None, None, None)] * self.num_layers
-        else:
-            momentum_list = [None] * self.num_layers
-        
-        tot_lb_loss = 0
-        for i in range(self.num_layers):
-            x = self.ffn_layers[i](x)
-            
-            x, momentum_list[i], lb_loss = self.moe_layers[i](x, momentum_list[i])
-            tot_lb_loss += lb_loss
-
-        x = x.squeeze(1)
-        out = self.out_embed(x)
-        tot_lb_loss *= self.alpha
-        
-        return out, tot_lb_loss
+        out = F.log_softmax(self.out_embed(h), dim = -1)
+        return out, h_cache_next

@@ -1,209 +1,305 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from tqdm import tqdm
+import os, sys
+import warnings
+
+warnings.filterwarnings("ignore")
+
 import argparse
-import matplotlib.pyplot as plt
-import numpy as np
-import os
+import math, random
+import torch
+import time
+
+from config import PARAMS_CONFIG
+from data import get_train_val_test_data
+from models import TransformerSeq
+from trainer import train_iteration, full_eval
+import datetime
 import wandb
+import os
+from utils import (
+    get_params,
+    set_up_env,
+    get_optimizer_and_scheduler,
+    load_checkpoint,
+    save_checkpoint,
+    create_exp_dir,
+    Logger,
+)
 
-from utils import get_data, make_wandb_table, EarlyStopping
-from models import MHMomentumSMoE
 
-def iter_train(model, train_loader, optimizer, criterion, device, epoch):
-    model.train()
-    train_loss = 0
-    correct = 0
-    total = 0
+def launch(
+    env_params,
+    model_params,
+    optim_params,
+    data_params,
+    trainer_params,
+    wandb_params,
+):
+    # Initialize wandb only on the master process (rank 0)
+    distributed = env_params["distributed"]
+    is_master = not distributed or env_params.get("local_rank", 0) == 0
     
-    pbar = tqdm(train_loader, desc = f"Epoch {epoch}")
-    for batch_idx, (data, target) in enumerate(pbar):
-        data, target = data.to(device), target.to(device)
-        
-        optimizer.zero_grad()
-        output, lb_loss = model(data)
-        
-        loss = criterion(output, target)
-        loss += lb_loss
-        
-        loss.backward()
-        optimizer.step()
-        
-        train_loss += loss.item()
-        _, predicted = output.max(1)
-        total += target.size(0)
-        correct += predicted.eq(target).sum().item()
-        
-        pbar.set_postfix({
-            "loss": train_loss / (batch_idx + 1),
-            "acc": 100. * correct / total
-        })
-    
-    return train_loss / len(train_loader), 100. * correct / total
+    wandb_flag = wandb_params.get("wandb_flag", False)
+    wandb_checkpoints = wandb_params.get("wandb_checkpoints", False)
+    if wandb_flag and is_master:
+        run_id = wandb_params.get("run_id", None)
 
-def iter_validate(model, val_loader, criterion, device):
-    model.eval()
-    val_loss = 0
-    correct = 0
-    total = 0
+        wandb.init(project=wandb_params["project_name"], id = run_id, resume = "allow")
+        wandb.run.name = wandb_params["run_name"] if wandb_params["run_name"] else wandb.run.name
+        wandb.config.update(data_params)
+        wandb.config.update(model_params)
+        wandb.config.update(optim_params)
+        wandb.config.update(trainer_params)
     
-    with torch.no_grad():
-        for data, target in val_loader:
-            data, target = data.to(device), target.to(device)
-            output, _ = model(data)
-            val_loss += criterion(output, target).item()
-            _, predicted = output.max(1)
-            total += target.size(0)
-            correct += predicted.eq(target).sum().item()
+    # global val
+    best_val_loss = None
     
-    return val_loss / len(val_loader), 100. * correct / total
+    # ENVIRONMENT (device, distributed, etc.)
+    set_up_env(env_params)
+    device = env_params["device"]
+    world_size = env_params.get("world_size", 1)
+    resume = trainer_params["resume"]
 
-def train(args):
-    if args.wandb_key:
-        wandb.login(key = args.wandb_key)
-        wandb.init(
-            project = args.project_name,
-            name = args.run_name
+    if is_master:
+        print("data_params:\t", data_params)
+        print("model_params:\t", model_params)
+        print("optim_params:\t", optim_params)
+        print("trainer_params:\t", trainer_params)
+
+    # DATA
+    train_data, val_data, test_data = get_train_val_test_data(
+        data_params=data_params,
+        env_params=env_params,
+        batch_size=trainer_params["batch_size"],
+        device=device,
+    )
+
+
+    # MODEL
+    model = TransformerSeq(
+        vocab_size=data_params["vocab_size"],
+        world_size = world_size,
+        **model_params,
+    )
+    if is_master:
+        print(model)
+    
+    if distributed:
+        local_rank = env_params["local_rank"]
+        model = model.to(device)
+        model = torch.nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[local_rank],
+            output_device=local_rank,
+            find_unused_parameters=True,
         )
+    else:
+        model = torch.nn.DataParallel(model)
+        model = model.to(device)
+
+    # OPTIMIZER AND SCHEDULER
+    optimizer, scheduler = get_optimizer_and_scheduler(
+        model=model, optim_params=optim_params
+    )
+
+    # create logger - only on master process
+    if is_master:
+        logger = Logger()
+        fold_name = trainer_params["checkpoint_path"].split("/")[-1].split(".")[0]
+        folder_path = "/".join(trainer_params["checkpoint_path"].split("/")[:-1])
+        logging = create_exp_dir(f"{folder_path}/experiments/{fold_name}")
         
-        config = {
-            "dataset": args.data,
-            "batch_size": args.batch_size,
-            "hidden_size": args.hidden_size,
-            "inner_hidden_size": args.inner_hidden_size,
-            "num_experts": args.num_experts,
-            "num_heads": args.num_heads,
-            "num_layers": args.num_layers,
-            "moe_top_k": args.moe_top_k,
-            "dropout": args.dropout,
-            "mu": args.mu,
-            "gamma1": args.gamma1,
-            "gamma2": args.gamma2,
-            "beta1": args.beta1,
-            "beta2": args.beta2,
-            "learning_rate": args.lr,
-            "epochs": args.epochs,
-            "alpha": args.alpha
-        }
-        wandb.config.update(config)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    train_loader, test_loader, input_size, num_classes = get_data(ds_name = args.data, batch_size = args.batch_size)
-    
-    model = MHMomentumSMoE(
-        input_size = input_size,
-        hidden_size = args.hidden_size,
-        inner_hidden_size = args.inner_hidden_size,
-        num_classes = num_classes,
-        num_experts = args.num_experts,
-        num_heads = args.num_heads,
-        num_layers = args.num_layers,
-        moe_top_k = args.moe_top_k,
-        dropout = args.dropout,
-        mu = args.mu,
-        gamma1 = args.gamma1,
-        gamma2 = args.gamma2,
-        beta1 = args.beta1,
-        beta2 = args.beta2,
-        mom_type = args.mom_type,
-        alpha = args.alpha
-    ).to(device)
-    
-    optimizer = optim.Adam(model.parameters(), lr = args.lr)
-    criterion = nn.CrossEntropyLoss()
-    early_stopping = EarlyStopping(patience = 10)
-    
-    best_acc = 0
-    train_losses = []
-    train_accs = []
-    test_losses = []
-    test_accs = []
-    
-    for epoch in range(1, args.epochs + 1):
-        train_loss, train_acc = iter_train(model, train_loader, optimizer, criterion, device, epoch)
-        test_loss, test_acc = iter_validate(model, test_loader, criterion, device)
+        # log parameters
+        logging(f"Training Parameters:\n {trainer_params}")
+        logging(f"Models Parameters:\n {model_params}")
         
-        train_losses.append(train_loss)
-        train_accs.append(train_acc)
-        test_losses.append(test_loss)
-        test_accs.append(test_acc)
+        # logging time
+        current_time = datetime.datetime.now()
+        logging(str(current_time))
+
+        original_model = model.module
         
-        print(f"Epoch {epoch}: Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%, "
-              f"Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.2f}%")
-
-        if args.wandb_key:
-            wandb.log({
-                "train_loss": train_loss,
-                "train_acc": train_acc,
-                "test_loss": test_loss,
-                "test_acc": test_acc,
-            })
-
-        if test_acc > best_acc:
-            best_acc = test_acc
-            model_path = os.path.join(args.output_dir, "models", f"best_{args.run_name}_model.pt")
-            torch.save(model.state_dict(), model_path)
-            print(f"New best model saved with accuracy: {best_acc:.2f}%")            
-            
-            if args.wandb_key:
-                model_artifact = wandb.Artifact(
-                    name = args.run_name,
-                    type = "model"
-                )
-
-                model_artifact.add_file(model_path)
-
-                wandb.log_artifact(
-                    model_artifact,
-                    aliases=[f"epoch - {epoch}", f"test_accuracy - {best_acc}"]
-                )
-
-                wandb.run.summary[f"{args.run_name}_best_acc"] = best_acc
-
-        early_stopping.check(test_loss)
-        if early_stopping.stop_training:
-            print(f"Early stopping at epoch {epoch}\n")
-            break
-
-    make_wandb_table(
-        train_losses,
-        train_accs,
-        test_losses,
-        test_accs,
-        args.run_name
+        # log model
+        logging(str(original_model))
+        logging(f"Total of Parameters: {sum(p.numel() for p in original_model.parameters())}")
+        logging(
+            f"Total of Trainable Parameters: {sum(p.numel() for p in original_model.parameters() if p.requires_grad)}"
+        )
+    else:
+        logger = None
+        logging = lambda x: None  # Dummy logging function for non-master processes
+    
+    # resume training from last checkpoint if exists
+    iter_init = load_checkpoint(
+        trainer_params["checkpoint_path"],
+        model,
+        optimizer,
+        scheduler,
+        logger,
+        distributed,
+        resume,
+        wandb_params
     )
     
-    wandb.finish()
+    # calculate time
+    start_time = time.time()
+    
+    # eval model
+    if trainer_params.get("full_eval_mode", False):
+        # evaluate the model on test data
+        with torch.no_grad():
+            loss_val = full_eval(
+                model,
+                optimizer,
+                scheduler,
+                val_data,
+                trainer_params["block_size"],
+                model_params["hidden_size"],
+            )
+            loss_test = full_eval(
+                model,
+                optimizer,
+                scheduler,
+                test_data,
+                trainer_params["block_size"],
+                model_params["hidden_size"],
+            )
+            if distributed:
+                # collect results into rank0
+                stats = torch.tensor([loss_val, loss_test]).to(device)
+                torch.distributed.reduce(stats, 0)
+                if is_master:
+                    loss_val = stats[0] / env_params["world_size"]
+                    loss_test = stats[1] / env_params["world_size"]
+                else:
+                    return
+
+            if is_master:
+                if ("enwik8" in data_params["data_path"]) or (
+                    "text8" in data_params["data_path"]
+                ):
+                    logging("Val: {:.3f} BPC".format(loss_val / math.log(2)))
+                    logging("Test: {:.3f} BPC".format(loss_test / math.log(2)))
+                else:
+                    logging("Val: {:.3f} PPL".format(math.exp(loss_val)))
+                    logging("Test: {:.3f} PPL".format(math.exp(loss_test)))
+        return
+
+    # position of current batch
+    data_pos = [0] * 2
+    
+    # initialize caches for train and valid
+    hid_cache = [
+        [
+            torch.zeros(
+                train_data.size(0),
+                model.module.layers[layer_i].attn.attn.get_cache_size() if model.module.layers[layer_i].use_attn else 0,
+                model_params["hidden_size"],
+            ).to(device)
+            for layer_i in range(len(model.module.layers))
+        ]
+        for _ in range(2)
+    ]
+
+    nb_batches_per_iter = trainer_params["nb_batches_per_iter"]
+    num_epochs = trainer_params.get("epochs", 5)
+    for iter_no in range(iter_init, num_epochs):
+        # time storing
+        t_sta = time.time()
+        loss_train, data_pos[0], hid_cache[0] = train_iteration(
+            model,
+            model_params["load_balance"],
+            optimizer,
+            scheduler,
+            train_data,
+            nb_batches_per_iter,
+            trainer_params["block_size"],
+            False,
+            data_pos[0],
+            hid_cache[0],
+            trainer_params["batch_split"],
+            trainer_params["checkpoint_path"],
+        )
+        elapsed = 1000 * (time.time() - t_sta) / nb_batches_per_iter
+        with torch.no_grad():
+            loss_val, data_pos[1], hid_cache[1] = train_iteration(
+                model,
+                model_params["load_balance"],
+                optimizer,
+                scheduler,
+                val_data,
+                nb_batches_per_iter,
+                trainer_params["block_size"],
+                True,
+                data_pos[1],
+                hid_cache[1],
+                trainer_params["batch_split"],
+                trainer_params["checkpoint_path"],
+            )
+
+        if distributed:
+            # collect results into rank0
+            stats = torch.tensor([loss_train, loss_val]).to(device)
+            torch.distributed.reduce(stats, 0)
+            if is_master:
+                loss_train = stats[0] / env_params["world_size"]
+                loss_val = stats[1] / env_params["world_size"]
+            else:
+                continue
+                
+        if is_master:
+            logging(f"=================== EPOCHS {iter_no} ======================")
+            if ("enwik8" in data_params["data_path"]) or (
+                "text8" in data_params["data_path"]
+            ):
+                msg_result = "Epochs: {} | loss_train: {:.3f} ~ {:.3f} BPC | loss_val: {:.3f} ~ {:.3f} BPC | elapsed: {:.1f}".format(
+                    iter_no,
+                    loss_train,
+                    float(loss_train / math.log(2)),
+                    loss_val,
+                    float(loss_val / math.log(2)),
+                    elapsed,
+                )
+            else:
+                msg_result = "Epochs: {} | loss_train: {:.3f} ~ {:.3f} PPL | loss_val: {:.3f} ~ {:.3f} PPL | elapsed: {:.1f}".format(
+                    iter_no,
+                    loss_train,
+                    float(math.exp(loss_train)),
+                    loss_val,
+                    float(math.exp(loss_val)),
+                    elapsed,
+                )
+            logging(msg_result)
+            
+            # Log to wandb only from the master process
+            if wandb_flag:
+                wandb.log({
+                    'train_ppl': float(math.exp(loss_train)), 
+                    'Epoch': iter_no, 
+                    'valid_ppl': float(math.exp(loss_val)),
+                    'train_loss': loss_train,
+                    'valid_loss': loss_val,
+                    'elapsed_ms': elapsed
+                })
+            
+            logger.log_iter(iter_no, nb_batches_per_iter, loss_train, loss_val, elapsed, model)
+            
+            # Save the model if the validation loss is the best we've seen so far.
+            if (best_val_loss is None) or loss_val < best_val_loss:
+                best_val_loss = loss_val
+                save_checkpoint(
+                    trainer_params["checkpoint_path"],
+                    iter_no,
+                    model,
+                    optimizer,
+                    scheduler,
+                    wandb_flag,
+                    wandb_checkpoints,
+                )
+    
+    if is_master:
+        end_time = time.time()
+        logging(f"Training time total: {(end_time - start_time)/3600} h")
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--data", type = str, default = "mnist", help = "Dataset used in training: [mnist, cifar10]")
-    parser.add_argument("--batch-size", type = int, default = 128)
-    parser.add_argument("--hidden-size", type = int, default = 256)
-    parser.add_argument("--inner-hidden-size", type = int, default = 256)
-    parser.add_argument("--num-experts", type = int, default = 8)
-    parser.add_argument("--num-heads", type = int, default = 4)
-    parser.add_argument("--num-layers", type = int, default = 2)
-    parser.add_argument("--moe_top_k", type = int, default = 2)
-    parser.add_argument("--dropout", type = float, default = 0.1)
-    parser.add_argument("--mu", type = float, default = 0.7)
-    parser.add_argument("--gamma1", type=float, default = 1.0)
-    parser.add_argument("--gamma2", type=float, default = 1.0)
-    parser.add_argument("--beta1", type=float, default = 0.9)
-    parser.add_argument("--beta2", type=float, default = 0.999)
-    parser.add_argument("--mom-type", type=str, default = "heavy-ball")
-    parser.add_argument("--lr", type = float, default = 0.001)
-    parser.add_argument("--epochs", type = int, default = 10)
-    parser.add_argument("--output-dir", type = str, default = "output/", help = "Path to the output directory")
-    parser.add_argument("--alpha", type = float, default = 0.01, help = "Coefficient for the load balancing loss from Multi-head MoE paper")
-    
-    # wandb arguments
-    parser.add_argument("--wandb-key", type = str, default = None)
-    parser.add_argument("--project-name", type = str, default = "project_name")
-    parser.add_argument("--run-name", type = str, default = "run_name")
-    
-    args = parser.parse_args()
-
-    os.makedirs(os.path.join(args.output_dir, "models"), exist_ok = True)
-    train(args)
+    launch(**get_params(params_config=PARAMS_CONFIG))
