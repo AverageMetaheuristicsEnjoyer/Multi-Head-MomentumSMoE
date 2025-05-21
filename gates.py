@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 
 class BaseGate(nn.Module):
     def __init__(self, num_expert, world_size):
@@ -121,3 +122,34 @@ class MHMoEGate(BaseGate):
         if return_all_scores:
             return gate_top_k_idx, gate_score, routing_weights
         return gate_top_k_idx, gate_score
+
+def _normalize(x, dim = -1, eps = 1e-6):
+    m = torch.rsqrt(torch.square(x).sum(dim = dim, keepdim = True) + eps)
+    return x * m
+
+class SoftMoEGate(BaseGate):
+    def __init__(self, d_model, num_expert, world_size, num_slots):
+        super().__init__(num_expert, world_size)
+        self.total_slots = self.tot_expert * num_slots
+        self.mu = nn.Parameter(torch.empty(d_model, self.total_slots))
+        nn.init.kaiming_uniform_(self.mu, a = math.sqrt(5))
+
+        self.scale = nn.Parameter(torch.ones())
+        self.loss = None # no auxillary loss
+    
+    def forward(self, inp):
+        inp = _normalize(inp, dim = -1)
+        mu = _normalize(mu, dim = 0)
+
+        if inp.size < mu.size:
+            inp = inp * self.scale
+        else:
+            mu = mu * self.scale
+        
+        logits = torch.matmul(inp, mu)
+        # add noise?
+
+        dispatch_weights = F.softmax(logits, dim = 0)
+        combine_weights = F.softmax(logits, dim = 1)
+
+        return dispatch_weights, combine_weights
