@@ -1,0 +1,6 @@
+README.md
+setup.py
+fastmoe.egg-info/PKG-INFO
+fastmoe.egg-info/SOURCES.txt
+fastmoe.egg-info/dependency_links.txt
+fastmoe.egg-info/top_level.txt
