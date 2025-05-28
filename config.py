@@ -153,6 +153,17 @@ PARAMS_CONFIG = {
             "help": "Warmup period for AdEMAMix schedulers.",
             "dest": "t_warmup",
         },
+        "--use-xmoe": {
+            "action": "store_true",
+            "help": "Use X-MoE routing. Works only if gate_name = True",
+            "dest": "use_xmoe",
+        },
+        "--xmoe-dim": {
+            "type": int,
+            "default": 8, # for 16 experts
+            "help": "Dimension for X-MoE's low-dimensional projection for routing.",
+            "dest": "xmoe_dim",
+        },
     },
     "optim_params": {
         "--lr": {

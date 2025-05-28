@@ -77,38 +77,73 @@ class CustomNaiveGate_Balance_SMoE(BaseGate):
             return gate_top_k_idx, gate_score, gate
         return gate_top_k_idx, gate_score
 
+def _one_hot_with_dtype(data, num_classes, dtype, hot_value=1):
+    result = torch.zeros([data.size(0), num_classes], device=data.device, dtype=dtype)
+    result.scatter_(1, data.unsqueeze(-1), hot_value)
+    return result
+
 class MHMoEGate(BaseGate):
-    def __init__(self, d_model, num_expert, world_size, top_k = 2):
+    def __init__(
+        self,
+        d_model,
+        num_expert,
+        world_size,
+        top_k = 2,
+        use_xmoe = False,
+        xmoe_routing_dim = 8,
+    ):
         super().__init__(num_expert, world_size)
-        self.gate = nn.Linear(d_model, self.tot_expert)
+        if use_xmoe:
+            self.wg_reduction = nn.Linear(d_model, xmoe_routing_dim, bias = False)
+            wg = torch.empty(num_expert, xmoe_routing_dim)
+            nn.init.orthogonal_(wg, gain = 0.32)
+            self.register_parameter("wg", nn.Parameter(wg))
+        else:
+            self.wg = nn.Linear(d_model, num_expert, bias = False)
         self.top_k = top_k
         self.loss = None
     
-    def _calculate_load_balance_loss(self, routing_weights):
-        sub_tokens_count = routing_weights.size(0)
-        if sub_tokens_count == 0:
-            self.loss = torch.tensor(0.0, device = routing_weights.device)
-            return
+    def _cosine(self, mat1, mat2, eps = 1e-4):
+        assert mat1.dim() == 2
+        assert mat2.dim() == 2
+        # mat1 = F.normalize(mat1, p = 2.0, dim = 1, eps = eps)
+        mat2 = F.normalize(mat2.float(), p = 2.0, dim = 1, eps = eps)
+        return mat1.float().matmul(mat2.transpose(0, 1)).type_as(mat1)
+    
+    def _make_finite(self, scores):
+        ok = scores.isfinite()
+        if not ok.all():
+            # NaNs here can break the assignment algorithm
+            scores[~ok] = scores[ok].min()
+        return scores
 
-        top_k_weights, top_k_idx = torch.topk(
-            routing_weights,
-            k = self.top_k,
-            dim = -1,
+    def _calculate_load_balance_loss(self, scores_w_noise, top_ids):
+        num_samples, num_global_experts = int(scores_w_noise.size(0)), int(scores_w_noise.size(1))
+        mask = _one_hot_with_dtype(
+            top_ids[:, 0],
+            num_global_experts,
+            dtype = scores_w_noise.dtype,
+            hot_value = num_global_experts / num_samples
         )
-        
-        gates = torch.zeros_like(routing_weights)
-        gates = gates.scatter_(-1, top_k_idx, F.softmax(top_k_weights, dim = -1))
-
-        expert_counts = gates.sum(0)
-        router_freq = gates.mean(0)
-
-        self.loss = self.tot_expert * (router_freq * (expert_counts / sub_tokens_count)).sum()
+        me = torch.sum(scores_w_noise, dim = 0)
+        ce = torch.sum(mask, dim = 0)
+        self.loss = torch.sum(me * ce) / num_samples
     
     def forward(self, inp, return_all_scores = False):
-        routing_weights = self.gate(inp)
+        if self.use_xmoe:
+            inp = self.wg_reduction(inp)
+            with torch.no_grad():
+                wg_norm = self.wg.norm(p = 2.0, dim = -1, keepdim = True)
+                self.wg.mul_(1.5 / wg_norm)
+            logits = self._cosine(inp, self.wg)
+            logits = self._make_finite(logits)
+        else:
+            logits = self.wg(inp)
+
+        gates = F.softmax(logits, dim = -1)
 
         gate_top_k_logits, gate_top_k_idx = torch.topk(
-            routing_weights,
+            gates,
             k = self.top_k,
             dim = -1,
             largest = True,
@@ -116,8 +151,8 @@ class MHMoEGate(BaseGate):
         )
 
         gate_score = F.softmax(gate_top_k_logits, dim = -1)
-        self._calculate_load_balance_loss(routing_weights)
+        self._calculate_load_balance_loss(gates, gate_top_k_idx)
         
         if return_all_scores:
-            return gate_top_k_idx, gate_score, routing_weights
+            return gate_top_k_idx, gate_score, logits
         return gate_top_k_idx, gate_score

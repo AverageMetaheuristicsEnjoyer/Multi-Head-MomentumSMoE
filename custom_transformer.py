@@ -47,6 +47,8 @@ class FMoETransformerMLP(FMoE):
         moe_top_k,
         mhmoe_num_heads,
         mhmoe_beta,
+        use_xmoe,
+        xmoe_dim,
         world_size,
         expert_dp_comm = "none",
         expert_rank = 0,
@@ -57,6 +59,8 @@ class FMoETransformerMLP(FMoE):
             moe_top_k = moe_top_k,
             gate = gate,
             world_size=world_size,
+            use_xmoe = use_xmoe,
+            xmoe_dim = xmoe_dim,
         )
 
         self.experts = _Expert(

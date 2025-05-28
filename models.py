@@ -139,6 +139,8 @@ class MomentumLayer(FMoETransformerMLP):
         mhmoe_beta,
         gamma,
         mu,
+        use_xmoe,
+        xmoe_dim,
         world_size,
     ):
         activation = nn.Sequential(nn.ReLU(), nn.Dropout(dropout))
@@ -151,6 +153,8 @@ class MomentumLayer(FMoETransformerMLP):
             moe_top_k = moe_top_k,
             mhmoe_num_heads = mhmoe_num_heads,
             mhmoe_beta = mhmoe_beta,
+            use_xmoe = use_xmoe,
+            xmoe_dim = xmoe_dim,
             world_size = world_size,
         )
         self.gamma = gamma
@@ -182,6 +186,8 @@ class AdamLayer(FMoETransformerMLP):
         gamma1,
         gamma2,
         mu,
+        use_xmoe,
+        xmoe_dim,
         world_size,
         beta1,
         beta2,
@@ -197,6 +203,8 @@ class AdamLayer(FMoETransformerMLP):
             moe_top_k = moe_top_k,
             mhmoe_num_heads = mhmoe_num_heads,
             mhmoe_beta = mhmoe_beta,
+            use_xmoe = use_xmoe,
+            xmoe_dim = xmoe_dim,
             world_size = world_size,
         )
         self.gamma1 = gamma1
@@ -264,6 +272,8 @@ class AdEMAMixLayer(FMoETransformerMLP):
         beta2,
         beta3,
         t_warmup,
+        use_xmoe,
+        xmoe_dim,
         world_size,
         # weight_decay,
     ):
@@ -277,6 +287,8 @@ class AdEMAMixLayer(FMoETransformerMLP):
             moe_top_k = moe_top_k,
             mhmoe_num_heads = mhmoe_num_heads,
             mhmoe_beta = mhmoe_beta,
+            use_xmoe = use_xmoe,
+            xmoe_dim = xmoe_dim,
             world_size = world_size,
         )
         self.alpha = alpha
@@ -342,6 +354,8 @@ class TransformerSeqLayer(nn.Module):
         beta3,
         t_warmup,
         # weight_decay,
+        use_xmoe,
+        xmoe_dim,
         world_size,
         s,
         g,
@@ -381,6 +395,8 @@ class TransformerSeqLayer(nn.Module):
                 mhmoe_beta = mhmoe_beta,
                 gamma = gamma2,
                 mu = mu,
+                use_xmoe = use_xmoe,
+                use_xmoe = xmoe_dim,
                 world_size = world_size,
             )
             if g == "m"
@@ -397,6 +413,8 @@ class TransformerSeqLayer(nn.Module):
                 gamma1 = gamma1,
                 gamma2 = gamma2,
                 mu = mu,
+                use_xmoe = use_xmoe,
+                xmoe_dim = xmoe_dim,
                 world_size = world_size,
                 beta1 = beta1,
                 beta2 = beta2,
@@ -418,6 +436,8 @@ class TransformerSeqLayer(nn.Module):
                 beta2 = beta2,
                 beta3 = beta3,
                 t_warmup = t_warmup,
+                use_xmoe = use_xmoe,
+                xmoe_dim = xmoe_dim,
                 world_size = world_size,
                 # weight_decay = weight_decay,
             )
@@ -480,6 +500,8 @@ class TransformerSeq(nn.Module):
         beta3,
         t_warmup,
         # weight_decay,
+        use_xmoe,
+        xmoe_dim,
         world_size,
         **kwargs,
     ):
@@ -513,6 +535,8 @@ class TransformerSeq(nn.Module):
                 beta2 = beta2,
                 beta3 = beta3,
                 t_warmup = t_warmup,
+                use_xmoe = use_xmoe,
+                xmoe_dim = xmoe_dim,
                 # weight_decay = weight_decay,
                 world_size = world_size,
                 s = self.arch[2 * i],
