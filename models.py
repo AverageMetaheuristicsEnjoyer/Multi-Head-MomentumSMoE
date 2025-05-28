@@ -396,7 +396,7 @@ class TransformerSeqLayer(nn.Module):
                 gamma = gamma2,
                 mu = mu,
                 use_xmoe = use_xmoe,
-                use_xmoe = xmoe_dim,
+                xmoe_dim = xmoe_dim,
                 world_size = world_size,
             )
             if g == "m"
