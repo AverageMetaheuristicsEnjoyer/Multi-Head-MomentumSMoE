@@ -93,15 +93,18 @@ class MHMoEGate(BaseGate):
         xmoe_routing_dim = 8,
     ):
         super().__init__(num_expert, world_size)
-        if use_xmoe:
+        self.top_k = top_k
+        self.loss = None
+        self.use_xmoe = use_xmoe
+        self.xmoe_routing_dim = xmoe_routing_dim
+        if self.use_xmoe:
             self.wg_reduction = nn.Linear(d_model, xmoe_routing_dim, bias = False)
             wg = torch.empty(num_expert, xmoe_routing_dim)
             nn.init.orthogonal_(wg, gain = 0.32)
             self.register_parameter("wg", nn.Parameter(wg))
         else:
             self.wg = nn.Linear(d_model, num_expert, bias = False)
-        self.top_k = top_k
-        self.loss = None
+        
     
     def _cosine(self, mat1, mat2, eps = 1e-4):
         assert mat1.dim() == 2
