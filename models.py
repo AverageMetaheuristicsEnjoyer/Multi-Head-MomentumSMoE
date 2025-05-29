@@ -267,6 +267,8 @@ class AdEMAMixLayer(FMoETransformerMLP):
         moe_top_k,
         mhmoe_num_heads,
         mhmoe_beta,
+        gamma2,
+        mu,
         alpha,
         beta1,
         beta2,
@@ -276,6 +278,7 @@ class AdEMAMixLayer(FMoETransformerMLP):
         xmoe_dim,
         world_size,
         weight_decay,
+        layerth,
     ):
         activation = nn.Sequential(nn.ReLU(), nn.Dropout(dropout))
         super().__init__(
@@ -291,46 +294,55 @@ class AdEMAMixLayer(FMoETransformerMLP):
             xmoe_dim = xmoe_dim,
             world_size = world_size,
         )
+        self.mu = mu
+        self.gamma2 = gamma2
         self.alpha = alpha
         self.beta1 = beta1
         self.beta2 = beta2
         self.beta3 = beta3
         self.t_warmup = t_warmup
         self.weight_decay = weight_decay
-
+        self.layerth = layerth
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, inp, momentum):
-        m1, v, m2, step_count = momentum
-        step_count += 1
-        step = step_count.item()
-
-        alpha_t = linear_warmup_scheduler(step, alpha_end = self.alpha, alpha_start = 0, warmup = self.t_warmup)
-        beta3_t = linear_hl_warmup_scheduler(step, self.beta3, beta_start = self.beta1, warmup = self.t_warmup)
-
         moe_out = super().forward(inp)
         moe_out = self.dropout(moe_out)
 
-        m1_new = self.beta1 * m1 + (1 - self.beta1) * moe_out
-        v_new = self.beta2 * v + (1 - self.beta2) * (moe_out ** 2)
-        m2_new = beta3_t * m2 + (1 - beta3_t) * moe_out
-        
-        bias_correction1 = 1.0 - self.beta1 ** step
-        bias_correction2 = 1.0 - self.beta2 ** step
-        m1_hat = m1_new / bias_correction1
-        v_hat = v_new / bias_correction2
-        
-        combined_m = m1_hat + alpha_t * m2_new
-        
-        denom = torch.sqrt(v_hat + 1e-8)
-        update = combined_m / denom
-        
-        if self.weight_decay > 0:
-            update = update + self.weight_decay * inp
+        if self.layerth == 0:
+            m1, v, m2, step_count = momentum
+            step_count += 1
+            step = step_count.item()
+
+            alpha_t = linear_warmup_scheduler(step, alpha_end = self.alpha, alpha_start = 0, warmup = self.t_warmup)
+            beta3_t = linear_hl_warmup_scheduler(step, self.beta3, beta_start = self.beta1, warmup = self.t_warmup)
+
+            m1_new = self.beta1 * m1 + (1 - self.beta1) * moe_out
+            v_new = self.beta2 * v + (1 - self.beta2) * (moe_out ** 2)
+            m2_new = beta3_t * m2 + (1 - beta3_t) * moe_out
             
-        output = inp - update
-        
-        return output, (m1_new, v_new, m2_new, step_count)
+            bias_correction1 = 1.0 - self.beta1 ** step
+            bias_correction2 = 1.0 - self.beta2 ** step
+            m1_hat = m1_new / bias_correction1
+            v_hat = v_new / bias_correction2
+            
+            combined_m = m1_hat + alpha_t * m2_new
+            
+            denom = torch.sqrt(v_hat + 1e-8)
+            update = combined_m / denom
+            
+            if self.weight_decay > 0:
+                update = update + self.weight_decay * inp
+                
+            output = inp - update
+            
+            return output, (m1_new, v_new, m2_new, step_count)
+        else:
+            m1, v, m2, step_count = momentum
+            m2 = self.mu * m2 + self.gamma2 * moe_out
+            
+            output = inp - momentum
+            return output, (m1, v, m2, step_count)
 
 class TransformerSeqLayer(nn.Module):
     def __init__(
@@ -431,6 +443,8 @@ class TransformerSeqLayer(nn.Module):
                 moe_top_k = moe_top_k,
                 mhmoe_num_heads = mhmoe_num_heads,
                 mhmoe_beta = mhmoe_beta,
+                gamma2 = gamma2,
+                mu = mu,
                 alpha = alpha,
                 beta1 = beta1,
                 beta2 = beta2,
@@ -440,6 +454,7 @@ class TransformerSeqLayer(nn.Module):
                 xmoe_dim = xmoe_dim,
                 world_size = world_size,
                 weight_decay = weight_decay,
+                layerth = layerth,
             )
             if g == "e"
             else None
