@@ -153,6 +153,12 @@ PARAMS_CONFIG = {
             "help": "Warmup period for AdEMAMix schedulers.",
             "dest": "t_warmup",
         },
+        "--weight-decay": {
+            "type": float,
+            "default": 0.,
+            "help": "Weight decay for AdEMAMix",
+            "dest": "weight_decay",
+        },
         "--use-xmoe": {
             "action": "store_true",
             "help": "Use X-MoE routing. Works only if gate_name = True",
