@@ -341,7 +341,7 @@ class AdEMAMixLayer(FMoETransformerMLP):
             m1, v, m2, step_count = momentum
             m2 = self.mu * m2 + self.gamma2 * moe_out
             
-            output = inp - momentum
+            output = inp - m2
             return output, (m1, v, m2, step_count)
 
 class TransformerSeqLayer(nn.Module):
