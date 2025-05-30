@@ -4,6 +4,14 @@ import math, random
 import functools
 import os, shutil
 import torch
+from torch.distributed.checkpoint.state_dict import (
+    _init_optim_state,
+    get_model_state_dict,
+    get_optimizer_state_dict,
+    set_model_state_dict,
+    set_optimizer_state_dict,
+    StateDictOptions,
+)
 import tqdm
 from gates import CustomNaiveGate_Balance_SMoE, MHMoEGate
 import wandb
@@ -155,16 +163,41 @@ def get_optimizer_and_scheduler(model, optim_params):
 ##############################################################################
 
 
-def _load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distributed):
+def _load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distributed, sharded):
     print("loading from a checkpoint at {}".format(checkpoint_path))
-    if distributed:
+    if distributed or sharded:
         # the model is saved from gpu0 so we need to map it to CPU first
         checkpoint_state = torch.load(
-            checkpoint_path, map_location=lambda storage, loc: storage
+            checkpoint_path,
+            map_location = "cpu",
+            mmap = True,
         )
     else:
         checkpoint_state = torch.load(checkpoint_path)
     iter_init = checkpoint_state["nb_batches_per_iter"] + 1  # next iteration
+    if sharded:
+        set_model_state_dict(
+            model = model,
+            model_state_dict = checkpoint_state["model"],
+            options = StateDictOptions(
+                full_state_dict = True,
+                broadcast_from_rank0 = True,
+            ),
+        )
+        set_optimizer_state_dict(
+            model = model,
+            optimizers = optimizer,
+            optim_state_dict = checkpoint_state["optimizer"],
+            options = StateDictOptions(
+                full_state_dict = True,
+                broadcast_from_rank0 = True,
+            )
+        )
+        if scheduler is not None and "scheduler_iter" in checkpoint_state:
+            # we only need the step count
+            scheduler.step(checkpoint_state["scheduler_iter"])
+        return     
+    
     model.load_state_dict(checkpoint_state["model"])
     optimizer.load_state_dict(checkpoint_state["optimizer"])
     if scheduler is not None and "scheduler_iter" in checkpoint_state:
@@ -173,7 +206,7 @@ def _load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distr
     return iter_init
 
 
-def load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distributed, resume, wandb_params):
+def load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distributed, sharded, resume, wandb_params):
     if resume:
         run_id = wandb_params.get("run_id", None)
         wandb.init(project=wandb_params["project_name"], id = run_id, resume = "allow")
@@ -186,6 +219,7 @@ def load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distri
                 scheduler=scheduler,
                 logger=logger,
                 distributed=distributed,
+                sharded = sharded,
             )
         elif wandb_flag:
             print("Local checkpoint not found, attempting to download from wandb")
@@ -200,6 +234,7 @@ def load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distri
                 scheduler=scheduler,
                 logger=logger,
                 distributed=distributed,
+                sharded = sharded,
             )
         else:
             print("Failed to load checkpoint")
