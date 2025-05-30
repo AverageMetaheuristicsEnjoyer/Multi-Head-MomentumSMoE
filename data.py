@@ -66,7 +66,7 @@ def _build_corpus(data_path, env_params, data_name=None):
     corpus_path = os.path.join(data_path, "corpus.pt")
     if os.path.exists(corpus_path):
         print("Loading an existing corpus file from {}".format(corpus_path))
-        corpus = torch.load(corpus_path, weights_only=True)
+        corpus = torch.load(corpus_path, weights_only=False)
     else:
         print("Creating a corpus file at {}".format(corpus_path))
         if env_params["distributed"]:
@@ -80,7 +80,7 @@ def _build_corpus(data_path, env_params, data_name=None):
                 print("Waiting rank0 to create a corpus file.")
                 # sync with rank0
                 torch.distributed.broadcast(torch.zeros(1).cuda(), src=0)
-                corpus = torch.load(corpus_path, weights_only=True)
+                corpus = torch.load(corpus_path, weights_only=False)
         else:
             corpus = Corpus(data_path)
             torch.save(corpus, corpus_path)
