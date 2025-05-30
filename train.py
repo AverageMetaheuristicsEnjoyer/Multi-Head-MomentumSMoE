@@ -311,6 +311,8 @@ def launch(
     if is_master:
         end_time = time.time()
         logging(f"Training time total: {(end_time - start_time)/3600} h")
+    
+    torch.distributed.destroy_process_group()
 
 
 if __name__ == "__main__":
