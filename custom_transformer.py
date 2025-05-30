@@ -91,10 +91,10 @@ class FMoETransformerMLP(FMoE):
             reshaped_inp = self.split_layer(reshaped_inp)
             N, dim = reshaped_inp.shape
 
-            inp = inp.reshape(N, self.mhmoe_num_heads, dim // self.mhmoe_num_heads).contiguous()
-            inp = inp.reshape(N * self.mhmoe_num_heads, dim // self.mhmoe_num_heads).contiguous()
+            reshaped_inp = reshaped_inp.reshape(N, self.mhmoe_num_heads, dim // self.mhmoe_num_heads).contiguous()
+            reshaped_inp = reshaped_inp.reshape(N * self.mhmoe_num_heads, dim // self.mhmoe_num_heads).contiguous()
             
-            out = super().forward(inp)
+            out = super().forward(reshaped_inp)
 
             out = out.reshape(N, self.mhmoe_num_heads, dim // self.mhmoe_num_heads).contiguous()
             out = out.reshape(N, self.hidden_size).contiguous()
