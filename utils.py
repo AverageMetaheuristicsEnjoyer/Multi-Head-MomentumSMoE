@@ -171,9 +171,10 @@ def _load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distr
             checkpoint_path,
             map_location = "cpu",
             mmap = True,
+            weights_only=True,
         )
     else:
-        checkpoint_state = torch.load(checkpoint_path)
+        checkpoint_state = torch.load(checkpoint_path, weights_only=True)
     iter_init = checkpoint_state["nb_batches_per_iter"] + 1  # next iteration
     if sharded:
         set_model_state_dict(
