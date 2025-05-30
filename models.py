@@ -115,7 +115,7 @@ class MultiHeadSeqAttention(nn.Module):
 
 class FeedForwardLayer(nn.Module):
     def __init__(self, hidden_size, inner_hidden_size, dropout, **kargs):
-        nn.Module.__init__()
+        super().__init__()
         self.fc1 = nn.Linear(hidden_size, inner_hidden_size)
         self.fc2 = nn.Linear(inner_hidden_size, hidden_size)
         self.dropout = nn.Dropout(dropout)
