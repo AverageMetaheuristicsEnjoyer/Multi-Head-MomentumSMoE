@@ -310,7 +310,7 @@ class AdEMAMixLayer(FMoETransformerMLP):
         moe_out = self.dropout(moe_out)
 
         if self.layerth == 0:
-            m1, v, m2, step_count = momentum
+            m1, v, m2, step_count, _ = momentum
             step_count += 1
             step = step_count.item()
 
@@ -320,6 +320,7 @@ class AdEMAMixLayer(FMoETransformerMLP):
             m1_new = self.beta1 * m1 + (1 - self.beta1) * moe_out
             v_new = self.beta2 * v + (1 - self.beta2) * (moe_out ** 2)
             m2_new = beta3_t * m2 + (1 - beta3_t) * moe_out
+            momentum = self.mu * momentum[4] + self.gamma2 * moe_out
             
             bias_correction1 = 1.0 - self.beta1 ** step
             bias_correction2 = 1.0 - self.beta2 ** step
@@ -336,13 +337,13 @@ class AdEMAMixLayer(FMoETransformerMLP):
                 
             output = inp - update
             
-            return output, (m1_new, v_new, m2_new, step_count)
+            return output, (m1_new, v_new, m2_new, step_count, momentum)
         else:
-            m1, v, m2, step_count = momentum
-            m2 = self.mu * m2 + self.gamma2 * moe_out
+            m1, v, m2, step_count, _ = momentum
+            momentum = self.mu * momentum[4] + self.gamma2 * moe_out
             
-            output = inp - m2
-            return output, (m1, v, m2, step_count)
+            output = inp - momentum
+            return output, (m1, v, m2, step_count, momentum)
 
 class TransformerSeqLayer(nn.Module):
     def __init__(
@@ -571,7 +572,8 @@ class TransformerSeq(nn.Module):
                 torch.zeros_like(h),
                 torch.zeros_like(h),
                 torch.zeros_like(h),
-                torch.zeros(1, device = h.device, dtype = torch.long)
+                torch.zeros(1, device = h.device, dtype = torch.long),
+                torch.zeros_like(h),
             )
         elif "a" in self.arch:
             momentum = (
