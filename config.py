@@ -11,6 +11,18 @@ PARAMS_CONFIG = {
             "help": "Enable distributed training.",
             "dest": "distributed",
         },
+        "--sharded": {
+            "action": "store_true",
+            "default": False,
+            "help": "Enable Fully Sharded Data Parallel.",
+            "dest": "sharded",
+        },
+        "--cpu-offload": {
+            "action": "store_true",
+            "default": False,
+            "help": "Enable offload to CPU.",
+            "dest": "cpu_offload",
+        },
         "--local-rank": {
             "type": int,
             "default": int(get_env_var('LOCAL_RANK', 0)),

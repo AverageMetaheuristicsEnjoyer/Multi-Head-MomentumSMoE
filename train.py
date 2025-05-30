@@ -6,6 +6,7 @@ warnings.filterwarnings("ignore")
 import argparse
 import math, random
 import torch
+from torch.distributed.fsdp import fully_shard, CPUOffloadPolicy
 import time
 
 from config import PARAMS_CONFIG
@@ -36,6 +37,7 @@ def launch(
 ):
     # Initialize wandb only on the master process (rank 0)
     distributed = env_params["distributed"]
+    sharded = env_params["sharded"]
     is_master = not distributed or env_params.get("local_rank", 0) == 0
     
     wandb_flag = wandb_params.get("wandb_flag", False)
@@ -92,6 +94,17 @@ def launch(
             output_device=local_rank,
             find_unused_parameters=True,
         )
+    elif sharded:
+        local_rank = env_params["local_rank"]
+        model = model.to(device)
+        fsdp_kwargs = {}
+        if env_params["cpu_offload"]:
+            fsdp_kwargs["offload_policy"] = CPUOffloadPolicy(
+                pin_memory = True,
+            )
+        for layer in model.layers:
+            fully_shard(layer, **fsdp_kwargs)
+        fully_shard(model, **fsdp_kwargs)
     else:
         model = torch.nn.DataParallel(model)
         model = model.to(device)
@@ -136,6 +149,7 @@ def launch(
         scheduler,
         logger,
         distributed,
+        sharded,
         resume,
         wandb_params
     )
