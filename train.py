@@ -85,16 +85,7 @@ def launch(
     if is_master:
         print(model)
     
-    if distributed:
-        local_rank = env_params["local_rank"]
-        model = model.to(device)
-        model = torch.nn.parallel.DistributedDataParallel(
-            model,
-            device_ids=[local_rank],
-            output_device=local_rank,
-            find_unused_parameters=True,
-        )
-    elif sharded:
+    if sharded:
         local_rank = env_params["local_rank"]
         model = model.to(device)
         fsdp_kwargs = {}
@@ -105,6 +96,15 @@ def launch(
         for layer in model.layers:
             fully_shard(layer, **fsdp_kwargs)
         fully_shard(model, **fsdp_kwargs)
+    elif distributed:
+        local_rank = env_params["local_rank"]
+        model = model.to(device)
+        model = torch.nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[local_rank],
+            output_device=local_rank,
+            find_unused_parameters=True,
+        )
     else:
         model = torch.nn.DataParallel(model)
         model = model.to(device)
