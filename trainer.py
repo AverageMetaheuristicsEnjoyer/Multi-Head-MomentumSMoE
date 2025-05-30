@@ -138,22 +138,14 @@ def full_eval(model, optimizer, scheduler, data, block_size, hidden_size):
     nb_batches_per_iter_max = math.ceil(data.size(1) / block_size)
     
     # Create h_cache with proper dimensions for each layer
-    h_cache = []
-    for layer_i, layer in enumerate(model.module.layers):
-        if layer.use_attn:
-            cache_size = layer.attn.attn.get_cache_size()
-            h_cache.append(torch.zeros(
-                data.size(0),
-                cache_size,
-                hidden_size,
-            ).to(data.device))
-        else:
-            # For non-attention layers, create a dummy cache
-            h_cache.append(torch.zeros(
-                data.size(0),
-                0,
-                hidden_size,
-            ).to(data.device))
+    h_cache = [
+        torch.zeros(
+            data.size(0),
+            model.module.layers[layer_i].attn.attn.get_cache_size(),
+            hidden_size,
+        ).to(data.device)
+        for layer_i in range(model.module.attn_layer_count)
+    ]
 
     loss_all = 0
     actual_nb_batches_per_iter = 0
