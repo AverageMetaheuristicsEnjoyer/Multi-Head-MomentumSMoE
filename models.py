@@ -76,7 +76,7 @@ class MultiHeadSeqAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = hidden_size // num_heads
         self.attn = SeqAttention(
-            hidden_size = hidden_size,
+            hidden_size = self.head_dim,
             dropout = dropout,
             attn_span = attn_span,
         )
