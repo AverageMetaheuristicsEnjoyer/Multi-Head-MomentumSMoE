@@ -128,14 +128,12 @@ def launch(
         # logging time
         current_time = datetime.datetime.now()
         logging(str(current_time))
-
-        original_model = model.module
         
         # log model
-        logging(str(original_model))
-        logging(f"Total of Parameters: {sum(p.numel() for p in original_model.parameters())}")
+        logging(str(model))
+        logging(f"Total of Parameters: {sum(p.numel() for p in model.parameters())}")
         logging(
-            f"Total of Trainable Parameters: {sum(p.numel() for p in original_model.parameters() if p.requires_grad)}"
+            f"Total of Trainable Parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}"
         )
     else:
         logger = None
@@ -206,10 +204,10 @@ def launch(
         [
             torch.zeros(
                 train_data.size(0),
-                model.module.layers[layer_i].attn.attn.get_cache_size(),
+                model.layers[layer_i].attn.attn.get_cache_size(),
                 model_params["hidden_size"],
             ).to(device)
-            for layer_i in range(model.module.attn_layer_count)
+            for layer_i in range(model.attn_layer_count)
         ]
         for _ in range(2)
     ]
