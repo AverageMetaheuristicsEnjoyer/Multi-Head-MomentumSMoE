@@ -152,7 +152,7 @@ def launch(
                 optimizer,
                 scheduler,
                 val_data,
-                trainer_params["block_size"],
+                model_params["block_size"],
                 model_params["hidden_size"],
             )
             loss_test = full_eval(
@@ -160,7 +160,7 @@ def launch(
                 optimizer,
                 scheduler,
                 test_data,
-                trainer_params["block_size"],
+                model_params["block_size"],
                 model_params["hidden_size"],
             )
             if distributed:
@@ -192,10 +192,10 @@ def launch(
         [
             torch.zeros(
                 train_data.size(0),
-                model.module.layers[layer_i].attn.attn.get_cache_size() if model.module.layers[layer_i].use_attn else 0,
+                model.module.layers[layer_i].attn.attn.get_cache_size(),
                 model_params["hidden_size"],
             ).to(device)
-            for layer_i in range(len(model.module.layers))
+            for layer_i in range(model.module.attn_layer_count)
         ]
         for _ in range(2)
     ]
@@ -212,7 +212,7 @@ def launch(
             scheduler,
             train_data,
             nb_batches_per_iter,
-            trainer_params["block_size"],
+            model_params["block_size"],
             False,
             data_pos[0],
             hid_cache[0],
@@ -228,7 +228,7 @@ def launch(
                 scheduler,
                 val_data,
                 nb_batches_per_iter,
-                trainer_params["block_size"],
+                model_params["block_size"],
                 True,
                 data_pos[1],
                 hid_cache[1],

@@ -51,6 +51,12 @@ PARAMS_CONFIG = {
             "help": "Number of Transformer layers.",
             "dest": "num_layers",
         },
+        "--block-sz": {
+            "type": int,
+            "default": 256,
+            "help": "Sequence block size.",
+            "dest": "block_size",
+        },
         "--num-heads": {
             "type": int,
             "default": 8,
@@ -203,12 +209,6 @@ PARAMS_CONFIG = {
             "default": 128,
             "help": "Batch size per GPU.",
             "dest": "batch_size",
-        },
-        "--block-sz": {
-            "type": int,
-            "default": 256,
-            "help": "Sequence block size.",
-            "dest": "block_size",
         },
         "--batch-split": {
             "type": int,
