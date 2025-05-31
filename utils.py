@@ -183,6 +183,7 @@ def _load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distr
             options = StateDictOptions(
                 full_state_dict = True,
                 broadcast_from_rank0 = True,
+                strict = False,
             ),
         )
         set_optimizer_state_dict(
@@ -192,6 +193,7 @@ def _load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distr
             options = StateDictOptions(
                 full_state_dict = True,
                 broadcast_from_rank0 = True,
+                strict = False,
             )
         )
         if scheduler is not None and "scheduler_iter" in checkpoint_state:
@@ -253,6 +255,7 @@ def save_checkpoint(
                 options = StateDictOptions(
                     full_state_dict = True,
                     cpu_offload = True,
+                    strict = False,
                 ),
             ),
             "optimizer": get_optimizer_state_dict(
@@ -261,6 +264,7 @@ def save_checkpoint(
                 options = StateDictOptions(
                     full_state_dict = True,
                     cpu_offload = True,
+                    strict = False,
                 ),
             ),
         }
