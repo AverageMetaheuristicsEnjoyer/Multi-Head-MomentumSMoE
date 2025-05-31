@@ -199,7 +199,7 @@ def _load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distr
         if scheduler is not None and "scheduler_iter" in checkpoint_state:
             # we only need the step count
             scheduler.step(checkpoint_state["scheduler_iter"])
-        return     
+        return iter_init
     
     model.load_state_dict(checkpoint_state["model"])
     optimizer.load_state_dict(checkpoint_state["optimizer"])
