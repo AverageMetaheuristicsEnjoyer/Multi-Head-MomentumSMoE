@@ -49,7 +49,11 @@ def launch(
         wandb.config.update(data_params)
         wandb.config.update(model_params)
         wandb.config.update(optim_params)
-        wandb.config.update(trainer_params)
+        
+        # getting an error with --resume b.c. wandb tries to rewrite the saved value
+        trainer_wo_resume = trainer_params.copy()
+        trainer_wo_resume.pop("resume")
+        wandb.config.update(trainer_wo_resume)
     
     # global val
     best_val_loss = None
