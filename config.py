@@ -240,7 +240,7 @@ PARAMS_CONFIG = {
              "help": "Directory to save logs and outputs.",
              "dest": "output_dir",
         },
-        "--checkpoint": { # REMOVED LEADING SPACE
+        "--checkpoint": {
             "type": str,
             "default": None,
             "help": "Path to save/load model checkpoint. If None, uses output_dir.",
@@ -266,7 +266,7 @@ PARAMS_CONFIG = {
             "help": "Enable logging to Weights & Biases.",
             "dest": "wandb_flag",
         },
-        "--wandb-key": { # REMOVED LEADING SPACE
+        "--wandb-key": {
              "type": str,
              "default": None,
              "help": "WandB API key.",
@@ -290,11 +290,11 @@ PARAMS_CONFIG = {
             "help": "WandB run id for resuming existing run",
             "dest": "run_id",
         },
-        "--wandb-checkpoints": {
-            "action": "store_true",
-            "default": False,
-            "help": "Enable checkpoint saving to wandb",
-            "dest": "wandb_checkpoints",
+        "--wandb-save-every": {
+            "type": int,
+            "default": -1,
+            "help": "Enable checkpoint saving to wandb every N epochs.",
+            "dest": "wandb_save_every",
         }
     },
 }

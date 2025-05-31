@@ -243,7 +243,7 @@ def load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distri
 
 
 def save_checkpoint(
-    checkpoint_path, nb_batches_per_iter, model, optimizer, scheduler, wandb_flag, wandb_checkpoints
+    checkpoint_path, nb_batches_per_iter, model, optimizer, scheduler, wandb_flag, wandb_save_every
 ):
     if checkpoint_path:
         checkpoint_state = {
@@ -255,7 +255,7 @@ def save_checkpoint(
             checkpoint_state["scheduler_iter"] = scheduler.last_epoch
         torch.save(checkpoint_state, checkpoint_path)
 
-        if wandb_flag and wandb_checkpoints:
+        if wandb_flag and (wandb_save_every > 0 and nb_batches_per_iter % wandb_save_every == 0):
             model_artifact = wandb.Artifact(
                 name = wandb.run.name,
                 type = "model"

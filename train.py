@@ -41,7 +41,6 @@ def launch(
     is_master = not distributed or env_params.get("local_rank", 0) == 0
     
     wandb_flag = wandb_params.get("wandb_flag", False)
-    wandb_checkpoints = wandb_params.get("wandb_checkpoints", False)
     if wandb_flag and is_master:
         run_id = wandb_params.get("run_id", None)
 
@@ -305,7 +304,7 @@ def launch(
                     optimizer,
                     scheduler,
                     wandb_flag,
-                    wandb_checkpoints,
+                    wandb_params["wandb_save_every"],
                 )
     
     if is_master:
