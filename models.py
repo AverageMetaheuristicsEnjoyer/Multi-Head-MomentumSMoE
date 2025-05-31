@@ -113,19 +113,6 @@ class MultiHeadSeqAttention(nn.Module):
         out = self.proj_out(out)
         return out
 
-class FeedForwardLayer(nn.Module):
-    def __init__(self, hidden_size, inner_hidden_size, dropout, **kargs):
-        super().__init__()
-        self.fc1 = nn.Linear(hidden_size, inner_hidden_size)
-        self.fc2 = nn.Linear(inner_hidden_size, hidden_size)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, h):
-        h1 = F.relu(self.fc1(h))
-        h1 = self.dropout(h1)
-        h2 = self.fc2(h1)
-        return h2
-
 class MomentumLayer(FMoETransformerMLP):
     def __init__(
         self,
@@ -372,7 +359,6 @@ class TransformerSeqLayer(nn.Module):
         world_size,
         s,
         g,
-        f,
         layerth,
     ):
         super().__init__()
@@ -461,20 +447,8 @@ class TransformerSeqLayer(nn.Module):
             else None
         )
 
-        self.use_ff = f == "f"
-        self.ff = (
-            FeedForwardLayer(
-                hidden_size = hidden_size,
-                inner_hidden_size = inner_hidden_size,
-                dropout = dropout,
-            )
-            if self.use_ff
-            else None
-        )
-
         self.norm1 = nn.LayerNorm(hidden_size)
         self.norm2 = nn.LayerNorm(hidden_size)
-        self.norm3 = nn.LayerNorm(hidden_size)
     
     def forward(self, h, h_cache, pos_encoding, momentum):
         # h = B x M x H
@@ -486,9 +460,6 @@ class TransformerSeqLayer(nn.Module):
         if self.use_smoe:
             smoe_out, momentum = self.smoe(h, momentum)
             h = self.norm2(h + smoe_out) # B x M x H
-        if self.use_ff:
-            ff_out = self.ff(h)
-            h = self.norm3(h + ff_out) # B x M x H
         return h, momentum
 
 class TransformerSeq(nn.Module):
@@ -557,7 +528,6 @@ class TransformerSeq(nn.Module):
                 world_size = world_size,
                 s = self.arch[2 * i],
                 g = self.arch[2 * i + 1],
-                f = None,
                 layerth = i
             )
             for i in range(num_layers)
