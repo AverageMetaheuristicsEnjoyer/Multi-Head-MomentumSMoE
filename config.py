@@ -171,6 +171,18 @@ PARAMS_CONFIG = {
             "help": "Warmup period for AdEMAMix schedulers.",
             "dest": "t_warmup",
         },
+        "--alpha-warmup": {
+            "type": int,
+            "default": 0,
+            "help": "Warmup period for AdEMAMix alpha scheduler.",
+            "dest": "alpha_warmup",
+        },
+        "--beta3-warmup": {
+            "type": int,
+            "default": 0,
+            "help": "Warmup period for AdEMAMix beta3 scheduler.",
+            "dest": "beta3_warmup",
+        },
         "--weight-decay": {
             "type": float,
             "default": 0.,

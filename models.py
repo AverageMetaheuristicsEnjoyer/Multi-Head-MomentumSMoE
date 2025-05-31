@@ -261,6 +261,8 @@ class AdEMAMixLayer(FMoETransformerMLP):
         beta2,
         beta3,
         t_warmup,
+        alpha_warmup,
+        beta3_warmup,
         use_xmoe,
         xmoe_dim,
         world_size,
@@ -287,7 +289,9 @@ class AdEMAMixLayer(FMoETransformerMLP):
         self.beta1 = beta1
         self.beta2 = beta2
         self.beta3 = beta3
-        self.t_warmup = t_warmup
+        # self.t_warmup = t_warmup
+        self.alpha_warmup = alpha_warmup
+        self.beta3_warmup = beta3_warmup
         self.weight_decay = weight_decay
         self.layerth = layerth
         self.dropout = nn.Dropout(dropout)
@@ -300,24 +304,26 @@ class AdEMAMixLayer(FMoETransformerMLP):
             m1, v, m2, step_count, _ = momentum
             step_count += 1
             step = step_count.item()
+            bias_correction1 = 1.0 - self.beta1 ** step
+            bias_correction2 = 1.0 - self.beta2 ** step
 
-            alpha_t = linear_warmup_scheduler(step, alpha_end = self.alpha, alpha_start = 0, warmup = self.t_warmup)
-            beta3_t = linear_hl_warmup_scheduler(step, self.beta3, beta_start = self.beta1, warmup = self.t_warmup)
+            if self.alpha_warmup:
+                alpha_t = linear_warmup_scheduler(step, alpha_end = self.alpha, alpha_start = 0, warmup = self.alpha_warmup)
+            else:
+                alpha_t = self.alpha
+            
+            if self.beta3_warmup:
+                beta3_t = linear_hl_warmup_scheduler(step, self.beta3, beta_start = self.beta1, warmup = self.beta3_warmup)
+            else:
+                beta3_t = self.beta3
 
             m1_new = self.beta1 * m1 + (1 - self.beta1) * moe_out
             v_new = self.beta2 * v + (1 - self.beta2) * (moe_out ** 2)
             m2_new = beta3_t * m2 + (1 - beta3_t) * moe_out
             momentum = self.mu * momentum[4] + self.gamma2 * moe_out
             
-            bias_correction1 = 1.0 - self.beta1 ** step
-            bias_correction2 = 1.0 - self.beta2 ** step
-            m1_hat = m1_new / bias_correction1
-            v_hat = v_new / bias_correction2
-            
-            combined_m = m1_hat + alpha_t * m2_new
-            
-            denom = torch.sqrt(v_hat + 1e-8)
-            update = combined_m / denom
+            denom = (v_new.sqrt() / math.sqrt(bias_correction2)) + 1e-8
+            update = (m1_new / bias_correction1 + alpha_t * m2_new) / denom
             
             if self.weight_decay > 0:
                 update = update + self.weight_decay * inp
@@ -353,6 +359,8 @@ class TransformerSeqLayer(nn.Module):
         beta2,
         beta3,
         t_warmup,
+        alpha_warmup,
+        beta3_warmup,
         weight_decay,
         use_xmoe,
         xmoe_dim,
@@ -437,6 +445,8 @@ class TransformerSeqLayer(nn.Module):
                 beta2 = beta2,
                 beta3 = beta3,
                 t_warmup = t_warmup,
+                alpha_warmup = alpha_warmup,
+                beta3_warmup = beta3_warmup,
                 use_xmoe = use_xmoe,
                 xmoe_dim = xmoe_dim,
                 world_size = world_size,
@@ -486,6 +496,8 @@ class TransformerSeq(nn.Module):
         beta2,
         beta3,
         t_warmup,
+        alpha_warmup,
+        beta3_warmup,
         weight_decay,
         use_xmoe,
         xmoe_dim,
@@ -522,6 +534,8 @@ class TransformerSeq(nn.Module):
                 beta2 = beta2,
                 beta3 = beta3,
                 t_warmup = t_warmup,
+                alpha_warmup = alpha_warmup,
+                beta3_warmup = beta3_warmup,
                 use_xmoe = use_xmoe,
                 xmoe_dim = xmoe_dim,
                 weight_decay = weight_decay,
