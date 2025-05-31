@@ -189,6 +189,12 @@ PARAMS_CONFIG = {
             "help": "Weight decay for AdEMAMix",
             "dest": "weight_decay",
         },
+        "--ademamix-all-layers": {
+            "action": "store_true",
+            "default": False,
+            "help": "Process all layers using ademamix mometum (added for sweeps only).",
+            "dest": "ademamix_all_layers",
+        },
         "--use-xmoe": {
             "action": "store_true",
             "help": "Use X-MoE routing. Works only if gate_name = True",

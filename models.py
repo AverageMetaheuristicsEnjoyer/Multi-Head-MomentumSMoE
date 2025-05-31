@@ -263,6 +263,7 @@ class AdEMAMixLayer(FMoETransformerMLP):
         t_warmup,
         alpha_warmup,
         beta3_warmup,
+        ademamix_all_layers,
         use_xmoe,
         xmoe_dim,
         world_size,
@@ -292,6 +293,7 @@ class AdEMAMixLayer(FMoETransformerMLP):
         # self.t_warmup = t_warmup
         self.alpha_warmup = alpha_warmup
         self.beta3_warmup = beta3_warmup
+        self.ademamix_all_layers = ademamix_all_layers
         self.weight_decay = weight_decay
         self.layerth = layerth
         self.dropout = nn.Dropout(dropout)
@@ -300,7 +302,7 @@ class AdEMAMixLayer(FMoETransformerMLP):
         moe_out = super().forward(inp)
         moe_out = self.dropout(moe_out)
 
-        if self.layerth == 0:
+        if self.layerth == 0 or self.ademamix_all_layers:
             m1, v, m2, step_count, _ = momentum
             step_count += 1
             step = step_count.item()
@@ -361,6 +363,7 @@ class TransformerSeqLayer(nn.Module):
         t_warmup,
         alpha_warmup,
         beta3_warmup,
+        ademamix_all_layers,
         weight_decay,
         use_xmoe,
         xmoe_dim,
@@ -447,10 +450,11 @@ class TransformerSeqLayer(nn.Module):
                 t_warmup = t_warmup,
                 alpha_warmup = alpha_warmup,
                 beta3_warmup = beta3_warmup,
+                ademamix_all_layers = ademamix_all_layers,
+                weight_decay = weight_decay,
                 use_xmoe = use_xmoe,
                 xmoe_dim = xmoe_dim,
                 world_size = world_size,
-                weight_decay = weight_decay,
                 layerth = layerth,
             )
             if g == "e"
@@ -498,6 +502,7 @@ class TransformerSeq(nn.Module):
         t_warmup,
         alpha_warmup,
         beta3_warmup,
+        ademamix_all_layers,
         weight_decay,
         use_xmoe,
         xmoe_dim,
@@ -536,9 +541,10 @@ class TransformerSeq(nn.Module):
                 t_warmup = t_warmup,
                 alpha_warmup = alpha_warmup,
                 beta3_warmup = beta3_warmup,
+                ademamix_all_layers = ademamix_all_layers,
+                weight_decay = weight_decay,
                 use_xmoe = use_xmoe,
                 xmoe_dim = xmoe_dim,
-                weight_decay = weight_decay,
                 world_size = world_size,
                 s = self.arch[2 * i],
                 g = self.arch[2 * i + 1],
