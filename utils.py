@@ -248,8 +248,21 @@ def save_checkpoint(
     if checkpoint_path:
         checkpoint_state = {
             "nb_batches_per_iter": nb_batches_per_iter,  # last completed iteration
-            "model": model.state_dict(),
-            "optimizer": optimizer.state_dict(),
+            "model": get_model_state_dict(
+                model = model,
+                options = StateDictOptions(
+                    full_state_dict = True,
+                    cpu_offload = True,
+                ),
+            ),
+            "optimizer": get_optimizer_state_dict(
+                model = model,
+                optimizers = optimizer,
+                options = StateDictOptions(
+                    full_state_dict = True,
+                    cpu_offload = True,
+                ),
+            ),
         }
         if scheduler is not None:
             checkpoint_state["scheduler_iter"] = scheduler.last_epoch
