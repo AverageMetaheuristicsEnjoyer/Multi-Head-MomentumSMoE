@@ -332,6 +332,51 @@ class AdEMAMixLayer(FMoETransformerMLP):
             output = inp - momentum
             return output, (m1, v, m2, step_count, momentum)
 
+class SignumLayer(FMoETransformerMLP):
+    def __init__(
+        self,
+        hidden_size,
+        inner_hidden_size,
+        dropout,
+        gate,
+        num_experts,
+        moe_top_k,
+        mhmoe_num_heads,
+        mhmoe_beta,
+        use_xmoe,
+        xmoe_dim,
+        world_size,
+        beta1,
+        layerth,
+    ):
+        activation = nn.Sequential(nn.ReLU(), nn.Dropout(dropout))
+        super().__init__(
+            hidden_size = hidden_size,
+            inner_hidden_size = inner_hidden_size,
+            activation = activation,
+            gate = gate,
+            num_experts = num_experts,
+            moe_top_k = moe_top_k,
+            mhmoe_num_heads = mhmoe_num_heads,
+            mhmoe_beta = mhmoe_beta,
+            use_xmoe = use_xmoe,
+            xmoe_dim = xmoe_dim,
+            world_size = world_size,
+        )
+        self.beta1 = beta1
+        self.layerth = layerth
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, inp, momentum):
+        moe_out = super().forward(inp)
+        moe_out = self.dropout(moe_out)
+        
+        v = momentum
+        signum = self.beta1 * v + (1 - self.beta1) * torch.sign(moe_out)
+        output = inp - signum
+        
+        return output, signum
+
 class TransformerSeqLayer(nn.Module):
     def __init__(
         self,
@@ -444,6 +489,23 @@ class TransformerSeqLayer(nn.Module):
                 layerth = layerth,
             )
             if g == "e"
+            else
+            SignumLayer(
+                hidden_size = hidden_size,
+                inner_hidden_size = inner_hidden_size,
+                dropout = dropout,
+                gate = gate,
+                num_experts = num_experts,
+                moe_top_k = moe_top_k,
+                mhmoe_num_heads = mhmoe_num_heads,
+                mhmoe_beta = mhmoe_beta,
+                use_xmoe = use_xmoe,
+                xmoe_dim = xmoe_dim,
+                world_size = world_size,
+                beta1 = beta1,
+                layerth = layerth,
+            )
+            if g == "u"
             else None
         )
 
