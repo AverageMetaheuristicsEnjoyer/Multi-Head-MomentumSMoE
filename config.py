@@ -189,7 +189,7 @@ PARAMS_CONFIG = {
             "help": "Weight decay for AdEMAMix",
             "dest": "weight_decay",
         },
-        "--ademamix-all-layers": {
+        "--ademamix_all_layers": {
             "action": "store_true",
             "default": False,
             "help": "Process all layers using ademamix mometum (added for sweeps only).",
