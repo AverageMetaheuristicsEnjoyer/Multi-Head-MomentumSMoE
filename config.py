@@ -177,6 +177,11 @@ PARAMS_CONFIG = {
             "help": "Weight decay for AdEMAMix",
             "dest": "weight_decay",
         },
+        "--rand-zero": {
+            "action": "store_true",
+            "help": "Assign ±1 when sign == 0.",
+            "dest": "rand_zero",
+        },
         "--use-xmoe": {
             "action": "store_true",
             "help": "Use X-MoE routing. Works only if gate_name = True",

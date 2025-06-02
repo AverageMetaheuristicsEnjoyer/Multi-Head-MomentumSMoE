@@ -343,6 +343,7 @@ class SignumLayer(FMoETransformerMLP):
         moe_top_k,
         mhmoe_num_heads,
         mhmoe_beta,
+        rand_zero,
         use_xmoe,
         xmoe_dim,
         world_size,
@@ -364,6 +365,7 @@ class SignumLayer(FMoETransformerMLP):
             world_size = world_size,
         )
         self.beta1 = beta1
+        self.rand_zero = rand_zero
         self.layerth = layerth
         self.dropout = nn.Dropout(dropout)
 
@@ -372,7 +374,11 @@ class SignumLayer(FMoETransformerMLP):
         moe_out = self.dropout(moe_out)
         
         v = momentum
-        signum = self.beta1 * v + (1 - self.beta1) * torch.sign(moe_out)
+        moe_out = torch.sign(moe_out)
+        if self.rand_zero:
+            is_zero = (moe_out == 0)
+            moe_out[is_zero] = 2 * torch.random.randint(0, 2, size = torch.sum(is_zero)) - 1
+        signum = self.beta1 * v + (1 - self.beta1) * moe_out
         output = inp - signum
         
         return output, signum
@@ -399,6 +405,7 @@ class TransformerSeqLayer(nn.Module):
         beta3,
         t_warmup,
         weight_decay,
+        rand_zero,
         use_xmoe,
         xmoe_dim,
         world_size,
@@ -503,6 +510,7 @@ class TransformerSeqLayer(nn.Module):
                 xmoe_dim = xmoe_dim,
                 world_size = world_size,
                 beta1 = beta1,
+                rand_zero = rand_zero,
                 layerth = layerth,
             )
             if g == "u"
@@ -549,6 +557,7 @@ class TransformerSeq(nn.Module):
         beta3,
         t_warmup,
         weight_decay,
+        rand_zero,
         use_xmoe,
         xmoe_dim,
         world_size,
@@ -587,6 +596,7 @@ class TransformerSeq(nn.Module):
                 use_xmoe = use_xmoe,
                 xmoe_dim = xmoe_dim,
                 weight_decay = weight_decay,
+                rand_zero = rand_zero,
                 world_size = world_size,
                 s = self.arch[2 * i],
                 g = self.arch[2 * i + 1],
