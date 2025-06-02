@@ -120,7 +120,8 @@ class MHMoEGate(BaseGate):
             scores[~ok] = scores[ok].min()
         return scores
 
-    def _calculate_load_balance_loss(self, scores_w_noise, top_ids):
+    def _calculate_load_balance_loss(self, gate, top_ids):
+        scores_w_noise = F.softmax(gate / 0.3, dim=-1)
         num_samples, num_global_experts = int(scores_w_noise.size(0)), int(scores_w_noise.size(1))
         mask = _one_hot_with_dtype(
             top_ids[:, 0],
@@ -143,19 +144,17 @@ class MHMoEGate(BaseGate):
         else:
             logits = self.wg(inp)
 
-        gates = F.softmax(logits, dim = -1)
-
         gate_top_k_logits, gate_top_k_idx = torch.topk(
-            gates,
+            logits,
             k = self.top_k,
             dim = -1,
             largest = True,
             sorted = False,
         )
 
-        # gate_score = F.softmax(gate_top_k_logits, dim = -1)
-        self._calculate_load_balance_loss(gates, gate_top_k_idx)
+        gate_score = F.softmax(gate_top_k_logits, dim = -1)
+        self._calculate_load_balance_loss(logits, gate_top_k_idx)
         
         if return_all_scores:
-            return gate_top_k_idx, gate_top_k_logits, logits
-        return gate_top_k_idx, gate_top_k_logits
+            return gate_top_k_idx, gate_score, logits
+        return gate_top_k_idx, gate_score
