@@ -307,6 +307,7 @@ def launch(
                     model,
                     optimizer,
                     scheduler,
+                    sharded,
                     wandb_flag,
                     wandb_params["wandb_save_every"],
                 )

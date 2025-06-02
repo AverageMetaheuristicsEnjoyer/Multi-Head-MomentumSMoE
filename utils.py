@@ -11,7 +11,12 @@ from torch.distributed.checkpoint.state_dict import (
     set_model_state_dict,
     set_optimizer_state_dict,
     StateDictOptions,
+    get_state_dict,
+    set_state_dict
 )
+from torch.distributed.checkpoint.format_utils import dcp_to_torch_save, torch_save_to_dcp
+import torch.distributed.checkpoint as dcp
+from torch.distributed.checkpoint.stateful import Stateful
 import tqdm
 from gates import CustomNaiveGate_Balance_SMoE, MHMoEGate
 import wandb
@@ -162,10 +167,39 @@ def get_optimizer_and_scheduler(model, optim_params):
 # CHECKPOINT
 ##############################################################################
 
+class AppState(Stateful):
+    """This is a useful wrapper for checkpointing the Application State. Since this object is compliant
+    with the Stateful protocol, DCP will automatically call state_dict/load_stat_dict as needed in the
+    dcp.save/load APIs.
+
+    Note: We take advantage of this wrapper to hande calling distributed state dict methods on the model
+    and optimizer.
+    """
+
+    def __init__(self, model, optimizer=None):
+        self.model = model
+        self.optimizer = optimizer
+
+    def state_dict(self):
+        # this line automatically manages FSDP FQN's, as well as sets the default state dict type to FSDP.SHARDED_STATE_DICT
+        model_state_dict, optimizer_state_dict = get_state_dict(self.model, self.optimizer)
+        return {
+            "model": model_state_dict,
+            "optim": optimizer_state_dict
+        }
+
+    def load_state_dict(self, state_dict):
+        # sets our state dicts on the model and optimizer, now that we've loaded
+        set_state_dict(
+            self.model,
+            self.optimizer,
+            model_state_dict=state_dict["model"],
+            optim_state_dict=state_dict["optim"]
+        )
 
 def _load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distributed, sharded):
     print("loading from a checkpoint at {}".format(checkpoint_path))
-    if distributed or sharded:
+    if distributed:
         # the model is saved from gpu0 so we need to map it to CPU first
         checkpoint_state = torch.load(
             checkpoint_path,
@@ -179,21 +213,21 @@ def _load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distr
     if sharded:
         set_model_state_dict(
             model = model,
-            model_state_dict = checkpoint_state["model"],
+            model_state_dict = checkpoint_state["app"]["model"],
             options = StateDictOptions(
                 full_state_dict = True,
                 broadcast_from_rank0 = True,
-                strict = False,
+                strict = True,
             ),
         )
         set_optimizer_state_dict(
             model = model,
             optimizers = optimizer,
-            optim_state_dict = checkpoint_state["optimizer"],
+            optim_state_dict = checkpoint_state["app"]["optim"],
             options = StateDictOptions(
                 full_state_dict = True,
                 broadcast_from_rank0 = True,
-                strict = False,
+                strict = True,
             )
         )
         if scheduler is not None and "scheduler_iter" in checkpoint_state:
@@ -201,8 +235,8 @@ def _load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distr
             scheduler.step(checkpoint_state["scheduler_iter"])
         return iter_init
     
-    model.load_state_dict(checkpoint_state["model"])
-    optimizer.load_state_dict(checkpoint_state["optimizer"])
+    model.load_state_dict(checkpoint_state["app"]["model"])
+    optimizer.load_state_dict(checkpoint_state["app"]["optim"])
     if scheduler is not None and "scheduler_iter" in checkpoint_state:
         # we only need the step count
         scheduler.step(checkpoint_state["scheduler_iter"])
@@ -245,29 +279,29 @@ def load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distri
 
 
 def save_checkpoint(
-    checkpoint_path, nb_batches_per_iter, model, optimizer, scheduler, wandb_flag, wandb_save_every
+    checkpoint_path, nb_batches_per_iter, model, optimizer, scheduler, sharded, wandb_flag, wandb_save_every
 ):
     if checkpoint_path:
-        checkpoint_state = {
-            "nb_batches_per_iter": nb_batches_per_iter,  # last completed iteration
-            "model": get_model_state_dict(
-                model = model,
-                options = StateDictOptions(
-                    full_state_dict = True,
-                    cpu_offload = True,
-                    strict = False,
-                ),
-            ),
-            "optimizer": get_optimizer_state_dict(
-                model = model,
-                optimizers = optimizer,
-                options = StateDictOptions(
-                    full_state_dict = True,
-                    cpu_offload = True,
-                    strict = False,
-                ),
-            ),
-        }
+        if sharded:        
+            state_dict = {"app": AppState(model, optimizer)}
+            dcp.save(state_dict, checkpoint_id = os.path.dirname(checkpoint_path))
+
+            # ugly workaround
+            dcp_to_torch_save(os.path.dirname(checkpoint_path), checkpoint_path)
+            checkpoint_state = torch.load(checkpoint_path, weights_only=True)
+
+            checkpoint_state["nb_batches_per_iter"] = nb_batches_per_iter
+        
+        else:
+            state_dict = {
+                "model": model.state_dict(),
+                "optim": optimizer.state_dict(),
+            }
+            checkpoint_state = {
+                "nb_batches_per_iter": nb_batches_per_iter,
+                "app": state_dict,
+            }
+
         if scheduler is not None:
             checkpoint_state["scheduler_iter"] = scheduler.last_epoch
         torch.save(checkpoint_state, checkpoint_path)
