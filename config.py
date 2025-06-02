@@ -171,11 +171,29 @@ PARAMS_CONFIG = {
             "help": "Warmup period for AdEMAMix schedulers.",
             "dest": "t_warmup",
         },
+        "--alpha-warmup": {
+            "type": int,
+            "default": 0,
+            "help": "Warmup period for AdEMAMix alpha scheduler.",
+            "dest": "alpha_warmup",
+        },
+        "--beta3-warmup": {
+            "type": int,
+            "default": 0,
+            "help": "Warmup period for AdEMAMix beta3 scheduler.",
+            "dest": "beta3_warmup",
+        },
         "--weight-decay": {
             "type": float,
             "default": 0.,
             "help": "Weight decay for AdEMAMix",
             "dest": "weight_decay",
+        },
+        "--ademamix-all-layers": {
+            "action": "store_true",
+            "default": False,
+            "help": "Process all layers using ademamix mometum (added for sweeps only).",
+            "dest": "ademamix_all_layers",
         },
         "--rand-zero": {
             "action": "store_true",
