@@ -153,9 +153,9 @@ class MHMoEGate(BaseGate):
             sorted = False,
         )
 
-        gate_score = F.softmax(gate_top_k_logits, dim = -1)
+        # gate_score = F.softmax(gate_top_k_logits, dim = -1)
         self._calculate_load_balance_loss(gates, gate_top_k_idx)
         
         if return_all_scores:
-            return gate_top_k_idx, gate_score, logits
-        return gate_top_k_idx, gate_score
+            return gate_top_k_idx, gate_top_k_logits, logits
+        return gate_top_k_idx, gate_top_k_logits
