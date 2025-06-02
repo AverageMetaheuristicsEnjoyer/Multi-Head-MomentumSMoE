@@ -324,7 +324,7 @@ class AdEMAMixLayer(FMoETransformerMLP):
             m2_new = beta3_t * m2 + (1 - beta3_t) * moe_out
             momentum = self.mu * momentum[4] + self.gamma2 * moe_out
             
-            denom = (v_new.sqrt() / math.sqrt(bias_correction2 + 1e-8))
+            denom = torch.sqrt(v_new / bias_correction2 + 1e-8)
             update = (m1_new / bias_correction1 + alpha_t * m2_new) / denom
             
             if self.weight_decay > 0:
