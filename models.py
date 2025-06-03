@@ -616,7 +616,6 @@ class TransformerSeq(nn.Module):
                 weight_decay = weight_decay,
                 use_xmoe = use_xmoe,
                 xmoe_dim = xmoe_dim,
-                weight_decay = weight_decay,
                 rand_zero = rand_zero,
                 world_size = world_size,
                 s = self.arch[2 * i],
