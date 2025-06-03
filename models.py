@@ -315,7 +315,13 @@ class AdEMAMixLayer(FMoETransformerMLP):
                 alpha_t = self.alpha
             
             if self.beta3_warmup:
-                beta3_t = linear_hl_warmup_scheduler(step, self.beta3, beta_start = self.beta1, warmup = self.beta3_warmup)
+                # Observation:
+                # runs where beta3 == 0 started better at the begining
+                # but slowed down afterwards
+                if step == 1 or step == 2:
+                    beta3_t = 0
+                else:
+                    beta3_t = linear_hl_warmup_scheduler(step, self.beta3, beta_start = self.beta1, warmup = self.beta3_warmup)
             else:
                 beta3_t = self.beta3
 
