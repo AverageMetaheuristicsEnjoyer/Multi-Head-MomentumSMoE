@@ -300,6 +300,9 @@ class AdEMAMixLayer(FMoETransformerMLP):
         self.layerth = layerth
         self.dropout = nn.Dropout(dropout)
 
+    def gamma_scheduler(self, step, warmup_steps = 10):
+        self.gamma1 *= min(1, step / warmup_steps)
+
     def forward(self, inp, momentum):
         moe_out = super().forward(inp)
         moe_out = self.dropout(moe_out)
@@ -333,6 +336,7 @@ class AdEMAMixLayer(FMoETransformerMLP):
                 update = update + self.weight_decay * inp
                 
             output = inp - self.gamma1 * update
+            self.gamma_scheduler(step)
             
             return output, (m1_new, v_new, m2_new, step_count, momentum)
         else:
