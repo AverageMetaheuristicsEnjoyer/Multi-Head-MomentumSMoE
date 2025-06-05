@@ -254,6 +254,7 @@ class AdEMAMixLayer(FMoETransformerMLP):
         moe_top_k,
         mhmoe_num_heads,
         mhmoe_beta,
+        gamma1,
         gamma2,
         mu,
         alpha,
@@ -285,6 +286,7 @@ class AdEMAMixLayer(FMoETransformerMLP):
             world_size = world_size,
         )
         self.mu = mu
+        self.gamma1 = gamma1
         self.gamma2 = gamma2
         self.alpha = alpha
         self.beta1 = beta1
@@ -330,7 +332,7 @@ class AdEMAMixLayer(FMoETransformerMLP):
             if self.weight_decay > 0:
                 update = update + self.weight_decay * inp
                 
-            output = inp - update
+            output = inp - self.gamma1 * update
             
             return output, (m1_new, v_new, m2_new, step_count, momentum)
         else:
@@ -493,6 +495,7 @@ class TransformerSeqLayer(nn.Module):
                 moe_top_k = moe_top_k,
                 mhmoe_num_heads = mhmoe_num_heads,
                 mhmoe_beta = mhmoe_beta,
+                gamma1 = gamma1,
                 gamma2 = gamma2,
                 mu = mu,
                 alpha = alpha,
