@@ -78,11 +78,15 @@ def launch(
         device=device,
     )
 
+    entries_per_epoch = trainer_params["batch_size"] * \
+        trainer_params["batch_split"] * trainer_params["nb_batches_per_iter"]
 
     # MODEL
     model = TransformerSeq(
         vocab_size=data_params["vocab_size"],
         world_size = world_size,
+        gamma1_warmup = model_params["gamma_warmup"] * entries_per_epoch,
+        total_steps = trainer_params["epochs"] * entries_per_epoch,
         **model_params,
     )
     if is_master:

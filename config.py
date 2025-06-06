@@ -195,6 +195,12 @@ PARAMS_CONFIG = {
             "help": "Process all layers using ademamix mometum (added for sweeps only).",
             "dest": "ademamix_all_layers",
         },
+        "--gamma-warmup": {
+            "type": int,
+            "default": 0,
+            "help": "Warmup period for AdEMAMix gamma1 scheduler.",
+            "dest": "gamma_warmup",
+        },
         "--rand-zero": {
             "action": "store_true",
             "help": "Assign ±1 when sign == 0.",

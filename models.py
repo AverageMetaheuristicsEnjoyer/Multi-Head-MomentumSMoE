@@ -264,6 +264,8 @@ class AdEMAMixLayer(FMoETransformerMLP):
         t_warmup,
         alpha_warmup,
         beta3_warmup,
+        gamma1_warmup,
+        total_steps,
         ademamix_all_layers,
         use_xmoe,
         xmoe_dim,
@@ -295,13 +297,23 @@ class AdEMAMixLayer(FMoETransformerMLP):
         # self.t_warmup = t_warmup
         self.alpha_warmup = alpha_warmup
         self.beta3_warmup = beta3_warmup
+        self.warmup_steps = gamma1_warmup
+        self.total_steps = total_steps
         self.ademamix_all_layers = ademamix_all_layers
         self.weight_decay = weight_decay
         self.layerth = layerth
         self.dropout = nn.Dropout(dropout)
-
-    def gamma_scheduler(self, step, warmup_steps = 10):
-        self.gamma1 *= min(1, step / warmup_steps)
+        self.lr_min = 1e-5
+        self.lr_max = 1e-3
+    
+    def cosine_decay_warmup(self, step):
+        if step <= self.warmup_steps:
+            multiplier = step / self.warmup_steps
+        else:
+            multiplier = (step - self.warmup_steps) / (self.total_steps - self.warmup_steps)
+            multiplier = 0.5 * (1 + math.cos(math.pi * multiplier))
+        
+        return max(self.lr_min, self.lr_max * multiplier)
 
     def forward(self, inp, momentum):
         moe_out = super().forward(inp)
@@ -309,6 +321,8 @@ class AdEMAMixLayer(FMoETransformerMLP):
 
         if self.layerth == 0 or self.ademamix_all_layers:
             m1, v, m2, step_count, _ = momentum
+            gamma1 = self.cosine_decay_warmup(step)
+            
             step_count += 1
             step = step_count.item()
             bias_correction1 = 1.0 - self.beta1 ** step
@@ -334,9 +348,8 @@ class AdEMAMixLayer(FMoETransformerMLP):
             
             if self.weight_decay > 0:
                 update = update + self.weight_decay * inp
-                
-            output = inp - self.gamma1 * update
-            self.gamma_scheduler(step)
+            
+            output = inp - gamma1 * update
             
             return output, (m1_new, v_new, m2_new, step_count, momentum)
         else:
@@ -420,6 +433,8 @@ class TransformerSeqLayer(nn.Module):
         t_warmup,
         alpha_warmup,
         beta3_warmup,
+        gamma1_warmup,
+        total_steps,
         ademamix_all_layers,
         weight_decay,
         rand_zero,
@@ -509,6 +524,8 @@ class TransformerSeqLayer(nn.Module):
                 t_warmup = t_warmup,
                 alpha_warmup = alpha_warmup,
                 beta3_warmup = beta3_warmup,
+                gamma1_warmup = gamma1_warmup,
+                total_steps = total_steps,
                 ademamix_all_layers = ademamix_all_layers,
                 weight_decay = weight_decay,
                 use_xmoe = use_xmoe,
@@ -579,6 +596,8 @@ class TransformerSeq(nn.Module):
         t_warmup,
         alpha_warmup,
         beta3_warmup,
+        gamma1_warmup,
+        total_steps,
         ademamix_all_layers,
         weight_decay,
         rand_zero,
@@ -619,6 +638,8 @@ class TransformerSeq(nn.Module):
                 t_warmup = t_warmup,
                 alpha_warmup = alpha_warmup,
                 beta3_warmup = beta3_warmup,
+                gamma1_warmup = gamma1_warmup,
+                total_steps = total_steps,
                 ademamix_all_layers = ademamix_all_layers,
                 weight_decay = weight_decay,
                 use_xmoe = use_xmoe,
