@@ -321,10 +321,10 @@ class AdEMAMixLayer(FMoETransformerMLP):
 
         if self.layerth == 0 or self.ademamix_all_layers:
             m1, v, m2, step_count, _ = momentum
-            gamma1 = self.cosine_decay_warmup(step)
             
             step_count += 1
             step = step_count.item()
+            gamma1 = self.cosine_decay_warmup(step)
             bias_correction1 = 1.0 - self.beta1 ** step
             bias_correction2 = 1.0 - self.beta2 ** step
 
