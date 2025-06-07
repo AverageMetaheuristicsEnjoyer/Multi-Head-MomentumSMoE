@@ -201,6 +201,18 @@ PARAMS_CONFIG = {
             "help": "Warmup period for AdEMAMix gamma1 scheduler.",
             "dest": "gamma_warmup",
         },
+        "--gamma-max": {
+            "type": float,
+            "default": 1e-3,
+            "help": "Maximum learning rate after warmup.",
+            "dest": "gamma_max",
+        },
+        "--gamma-min": {
+            "type": float,
+            "default": 1e-5,
+            "help": "Minimum learning rate after cosine decay.",
+            "dest": "gamma_min",
+        },
         "--rand-zero": {
             "action": "store_true",
             "help": "Assign ±1 when sign == 0.",

@@ -265,6 +265,8 @@ class AdEMAMixLayer(FMoETransformerMLP):
         alpha_warmup,
         beta3_warmup,
         gamma1_warmup,
+        gamma_max,
+        gamma_min,
         total_steps,
         ademamix_all_layers,
         use_xmoe,
@@ -303,8 +305,8 @@ class AdEMAMixLayer(FMoETransformerMLP):
         self.weight_decay = weight_decay
         self.layerth = layerth
         self.dropout = nn.Dropout(dropout)
-        self.lr_min = 1e-5
-        self.lr_max = 1e-3
+        self.lr_min = gamma_min
+        self.lr_max = gamma_max
     
     def cosine_decay_warmup(self, step):
         if step <= self.warmup_steps:
@@ -434,6 +436,8 @@ class TransformerSeqLayer(nn.Module):
         alpha_warmup,
         beta3_warmup,
         gamma1_warmup,
+        gamma_max,
+        gamma_min,
         total_steps,
         ademamix_all_layers,
         weight_decay,
@@ -525,6 +529,8 @@ class TransformerSeqLayer(nn.Module):
                 alpha_warmup = alpha_warmup,
                 beta3_warmup = beta3_warmup,
                 gamma1_warmup = gamma1_warmup,
+                gamma_max = gamma_max,
+                gamma_min = gamma_min,
                 total_steps = total_steps,
                 ademamix_all_layers = ademamix_all_layers,
                 weight_decay = weight_decay,
@@ -597,6 +603,8 @@ class TransformerSeq(nn.Module):
         alpha_warmup,
         beta3_warmup,
         gamma1_warmup,
+        gamma_max,
+        gamma_min,
         total_steps,
         ademamix_all_layers,
         weight_decay,
@@ -639,6 +647,8 @@ class TransformerSeq(nn.Module):
                 alpha_warmup = alpha_warmup,
                 beta3_warmup = beta3_warmup,
                 gamma1_warmup = gamma1_warmup,
+                gamma_max = gamma_max,
+                gamma_min = gamma_min,
                 total_steps = total_steps,
                 ademamix_all_layers = ademamix_all_layers,
                 weight_decay = weight_decay,
