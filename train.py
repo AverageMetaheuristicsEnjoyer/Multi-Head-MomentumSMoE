@@ -87,6 +87,8 @@ def launch(
         world_size = world_size,
         gamma1_warmup = model_params["gamma_warmup"] * entries_per_epoch,
         total_steps = trainer_params["epochs"] * entries_per_epoch,
+        alpha_warmup = model_params["alpha_warmup_ep"] * entries_per_epoch,
+        beta3_warmup = model_params["beta3_warmup_ep"] * entries_per_epoch,
         **model_params,
     )
     if is_master:
