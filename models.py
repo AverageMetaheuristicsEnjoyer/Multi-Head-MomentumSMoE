@@ -113,6 +113,19 @@ class MultiHeadSeqAttention(nn.Module):
         out = self.proj_out(out)
         return out
 
+class FeedForwardLayer(nn.Module):
+    def __init__(self, hidden_size, inner_hidden_size, dropout, **kwargs):
+        super().__init__()
+        self.fc1 = nn.Linear(hidden_size, inner_hidden_size)
+        self.fc2 = nn.Linear(inner_hidden_size, hidden_size)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, h):
+        h1 = F.relu(self.fc1(h))
+        h1 = self.dropout(h1)
+        h2 = self.fc2(h1)
+        return h2
+
 class MomentumLayer(FMoETransformerMLP):
     def __init__(
         self,
@@ -421,7 +434,7 @@ class TransformerSeqLayer(nn.Module):
         xmoe_dim,
         world_size,
         s,
-        g,
+        e,
         layerth,
     ):
         super().__init__()
@@ -444,7 +457,7 @@ class TransformerSeqLayer(nn.Module):
             else None
         )
         
-        self.use_smoe = g in ["m", "a", "e"]
+        self.use_smoe = e in ["m", "a", "e"]
         self.smoe = (
             MomentumLayer(
                 hidden_size = hidden_size,
@@ -461,7 +474,7 @@ class TransformerSeqLayer(nn.Module):
                 xmoe_dim = xmoe_dim,
                 world_size = world_size,
             )
-            if g == "m"
+            if e == "m"
             else
             AdamLayer(
                 hidden_size = hidden_size,
@@ -482,7 +495,7 @@ class TransformerSeqLayer(nn.Module):
                 beta2 = beta2,
                 layerth = layerth,
             )
-            if g == "a"
+            if e == "a"
             else
             AdEMAMixLayer(
                 hidden_size = hidden_size,
@@ -509,7 +522,7 @@ class TransformerSeqLayer(nn.Module):
                 world_size = world_size,
                 layerth = layerth,
             )
-            if g == "e"
+            if e == "e"
             else
             SignumLayer(
                 hidden_size = hidden_size,
@@ -527,12 +540,24 @@ class TransformerSeqLayer(nn.Module):
                 rand_zero = rand_zero,
                 layerth = layerth,
             )
-            if g == "u"
+            if e == "u"
+            else None
+        )
+
+        self.use_ff = e == "f"
+        self.ff = (
+            FeedForwardLayer(
+                hidden_size = hidden_size,
+                inner_hidden_size = inner_hidden_size,
+                dropout = dropout,
+            )
+            if e == "f"
             else None
         )
 
         self.norm1 = nn.LayerNorm(hidden_size)
         self.norm2 = nn.LayerNorm(hidden_size)
+        self.norm3 = nn.LayerNorm(hidden_size)
     
     def forward(self, h, h_cache, pos_encoding, momentum):
         # h = B x M x H
@@ -544,6 +569,9 @@ class TransformerSeqLayer(nn.Module):
         if self.use_smoe:
             smoe_out, momentum = self.smoe(h, momentum)
             h = self.norm2(h + smoe_out) # B x M x H
+        if self.use_ff:
+            ff_out = self.ff(h)
+            h = self.norm3(h + ff_out) # B x M x H
         return h, momentum
 
 class TransformerSeq(nn.Module):
@@ -619,7 +647,7 @@ class TransformerSeq(nn.Module):
                 rand_zero = rand_zero,
                 world_size = world_size,
                 s = self.arch[2 * i],
-                g = self.arch[2 * i + 1],
+                e = self.arch[2 * i + 1],
                 layerth = i
             )
             for i in range(num_layers)
