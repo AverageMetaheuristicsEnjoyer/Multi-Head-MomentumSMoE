@@ -315,7 +315,8 @@ class AdEMAMixLayer(FMoETransformerMLP):
             multiplier = (step - self.warmup_steps) / (self.total_steps - self.warmup_steps)
             multiplier = 0.5 * (1 + math.cos(math.pi * multiplier))
         
-        return max(self.lr_min, self.lr_max * multiplier)
+        self.gamma1 = self.lr_max * multiplier
+        return self.gamma1
 
     def forward(self, inp, momentum):
         moe_out = super().forward(inp)
