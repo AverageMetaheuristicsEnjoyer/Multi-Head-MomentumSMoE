@@ -51,7 +51,7 @@ class Signum(Optimizer):
         
         defaults = dict(lr=lr, momentum=momentum, weight_decay=weight_decay)
 
-        super.__init__(params, defaults)
+        super().__init__(params, defaults)
 
     def __setstate__(self, state):
         super().__setstate__(state)
