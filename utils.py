@@ -154,8 +154,9 @@ def _get_scheduler(optimizer, lr_warmup):
 
 def get_optimizer_and_scheduler(model, optim_params):
     # Handling missing parameters with defaults
-    momentum = optim_params.get("momentum", 0.0)
     grad_clip = optim_params.get("grad_clip", 0.0)
+
+    momentum = optim_params["momentum"]
     
     optimizer = _get_optimizer(
         model=model,

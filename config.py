@@ -231,6 +231,12 @@ PARAMS_CONFIG = {
             "help": "Number of linear learning rate warmup steps (0 to disable).",
             "dest": "lr_warmup",
         },
+        "--momentum": {
+            "type": float,
+            "default": 0.,
+            "help": "Momentum for 'sgd' and 'signum'.",
+            "dest": "momentum"
+        },
     },
     "trainer_params": {
          "--epochs": {
