@@ -20,6 +20,7 @@ from torch.distributed.checkpoint.stateful import Stateful
 import tqdm
 from gates import CustomNaiveGate_Balance_SMoE, MHMoEGate
 import wandb
+from optimizers.signum import Signum
 
 
 def logging(s, log_path, print_=True, log_=True):
@@ -134,6 +135,10 @@ def _get_optimizer(model, optim, lr, momentum=0.0, grad_clip=0.0):
         return torch.optim.Adam(
             _get_grad_requiring_params(model),
             lr=lr,
+        )
+    elif optim == "signum":
+        return Signum(
+            _get_grad_requiring_params(model), lr=lr, momentum=momentum,
         )
     else:
         raise RuntimeError("wrong type of optimizer - must be 'sgd' or 'adam'")

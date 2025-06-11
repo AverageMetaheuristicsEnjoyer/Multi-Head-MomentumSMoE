@@ -222,7 +222,7 @@ PARAMS_CONFIG = {
         "--optim": {
             "type": str,
             "default": "adam",
-            "help": "Optimizer type: 'sgd' or 'adam'.",
+            "help": "Optimizer type: 'sgd', 'adam' or 'signum'.",
             "dest": "optim",
         },
         "--lr-warmup": {
