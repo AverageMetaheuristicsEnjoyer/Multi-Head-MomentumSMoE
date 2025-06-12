@@ -160,7 +160,6 @@ def get_optimizer_and_scheduler(model, optim_params):
         optim=optim_params["optim"],
         lr=optim_params["lr"],
         momentum=momentum,
-        grad_clip=grad_clip,
     )
     scheduler = _get_scheduler(optimizer=optimizer, lr_warmup=optim_params.get("lr_warmup", 0))
     return optimizer, scheduler
