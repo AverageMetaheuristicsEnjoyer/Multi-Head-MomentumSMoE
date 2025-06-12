@@ -141,7 +141,7 @@ def _get_optimizer(model, optim, lr, momentum=0.0, grad_clip=0.0):
             _get_grad_requiring_params(model), lr=lr, momentum=momentum,
         )
     else:
-        raise RuntimeError("wrong type of optimizer - must be 'sgd' or 'adam'")
+        raise RuntimeError("wrong type of optimizer - must be 'sgd', 'adam' or 'signum'")
 
 
 def _get_scheduler(optimizer, lr_warmup):
