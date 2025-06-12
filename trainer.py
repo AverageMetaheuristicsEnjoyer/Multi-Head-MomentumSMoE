@@ -77,7 +77,7 @@ def _train_batch(
         if scheduler is not None:
             scheduler.step()
         if clip is not None:
-            torch.nn.utils.clip_grad_norm_(model.params(), max_norm = clip)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm = clip)
         optimizer.step()
 
     return loss_value, h_cache
