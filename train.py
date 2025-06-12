@@ -203,18 +203,31 @@ def launch(
     data_pos = [0] * 2
     
     # initialize caches for train and valid
-    # TODO: FSDP don't need "model.module. ..." opposite of DDP
-    hid_cache = [
-        [
-            torch.zeros(
-                train_data.size(0),
-                model.layers[layer_i].attn.attn.get_cache_size(),
-                model_params["hidden_size"],
-            ).to(device)
-            for layer_i in range(model.attn_layer_count)
+    # FSDP don't need "model.module. ..." opposite of DDP
+    if sharded:
+        hid_cache = [
+            [
+                torch.zeros(
+                    train_data.size(0),
+                    model.layers[layer_i].attn.attn.get_cache_size(),
+                    model_params["hidden_size"],
+                ).to(device)
+                for layer_i in range(model.attn_layer_count)
+            ]
+            for _ in range(2)
         ]
-        for _ in range(2)
-    ]
+    else:
+        hid_cache = [
+            [
+                torch.zeros(
+                    train_data.size(0),
+                    model.module.layers[layer_i].attn.attn.get_cache_size(),
+                    model_params["hidden_size"],
+                ).to(device)
+                for layer_i in range(model.module.attn_layer_count)
+            ]
+            for _ in range(2)
+        ]
 
     nb_batches_per_iter = trainer_params["nb_batches_per_iter"]
     num_epochs = trainer_params.get("epochs", 5)
