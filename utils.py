@@ -126,7 +126,7 @@ def _get_grad_requiring_params(model):
     return grad_requiring_params
 
 
-def _get_optimizer(model, optim, lr, momentum=0.0, grad_clip=0.0):
+def _get_optimizer(model, optim, lr, momentum=0.0):
     if optim == "sgd":
         return torch.optim.SGD(
             _get_grad_requiring_params(model), lr=lr, momentum=momentum
@@ -153,9 +153,6 @@ def _get_scheduler(optimizer, lr_warmup):
 
 
 def get_optimizer_and_scheduler(model, optim_params):
-    # Handling missing parameters with defaults
-    grad_clip = optim_params.get("grad_clip", 0.0)
-
     momentum = optim_params["momentum"]
     
     optimizer = _get_optimizer(

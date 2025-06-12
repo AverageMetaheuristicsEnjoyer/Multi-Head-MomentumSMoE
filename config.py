@@ -237,6 +237,12 @@ PARAMS_CONFIG = {
             "help": "Momentum for 'sgd' and 'signum'.",
             "dest": "momentum"
         },
+        "--clip": {
+            "type": float,
+            "default": None,
+            "help": "Clip the gradient norm.",
+            "dest": "clip"
+        },
     },
     "trainer_params": {
          "--epochs": {

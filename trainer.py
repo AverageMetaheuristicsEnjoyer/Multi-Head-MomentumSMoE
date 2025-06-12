@@ -30,7 +30,16 @@ def _train_step(model, load_balance, X, Y, h_cache, eval_only, loss_div=1):
 
 
 def _train_batch(
-    model, load_balance, optimizer, scheduler, X, Y, h_cache, eval_only, batch_split
+    model,
+    load_balance,
+    optimizer,
+    scheduler,
+    X,
+    Y,
+    h_cache,
+    eval_only,
+    batch_split,
+    clip
 ):
     """Train on a batch."""
 
@@ -67,6 +76,8 @@ def _train_batch(
     if not eval_only:
         if scheduler is not None:
             scheduler.step()
+        if clip is not None:
+            torch.nn.utils.clip_grad_norm_(model.params(), max_norm = clip)
         optimizer.step()
 
     return loss_value, h_cache
@@ -84,7 +95,7 @@ def train_iteration(
     train_pos,
     h_cache,
     batch_split,
-    checkpoint_path,
+    clip = None,
 ):
     """Single training iteration."""
     if eval_only:
@@ -117,6 +128,7 @@ def train_iteration(
             h_cache=h_cache,
             eval_only=eval_only,
             batch_split=batch_split,
+            clip=clip,
         )
         loss_all += loss
         train_pos += block_size

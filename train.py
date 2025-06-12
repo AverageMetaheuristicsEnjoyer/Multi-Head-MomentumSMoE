@@ -203,6 +203,7 @@ def launch(
     data_pos = [0] * 2
     
     # initialize caches for train and valid
+    # TODO: FSDP don't need "model.module. ..." opposite of DDP
     hid_cache = [
         [
             torch.zeros(
@@ -232,7 +233,7 @@ def launch(
             data_pos[0],
             hid_cache[0],
             trainer_params["batch_split"],
-            trainer_params["checkpoint_path"],
+            optim_params["clip"],
         )
         elapsed = 1000 * (time.time() - t_sta) / nb_batches_per_iter
         with torch.no_grad():
