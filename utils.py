@@ -155,7 +155,7 @@ def _get_scheduler(optimizer, optim_params, total_iterations):
                 optimizer, lambda ep: min(1, ep / lr_warmup)
             )
             scheduler2 = optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max = total_iterations, eta_min = eta_min,
+                optimizer, T_max = total_iterations - lr_warmup, eta_min = eta_min,
             )
             return optim.lr_scheduler.SequentialLR(
                 optimizer, schedulers = [scheduler1, scheduler2], milestones = [lr_warmup + 1]
