@@ -4,6 +4,7 @@ import math, random
 import functools
 import os, shutil
 import torch
+from torch import optim
 from torch.distributed.checkpoint.state_dict import (
     _init_optim_state,
     get_model_state_dict,
@@ -128,11 +129,11 @@ def _get_grad_requiring_params(model):
 
 def _get_optimizer(model, optim, lr, momentum=0.0):
     if optim == "sgd":
-        return torch.optim.SGD(
+        return optim.SGD(
             _get_grad_requiring_params(model), lr=lr, momentum=momentum
         )
     elif optim == "adam":
-        return torch.optim.Adam(
+        return optim.Adam(
             _get_grad_requiring_params(model),
             lr=lr,
         )
@@ -144,15 +145,28 @@ def _get_optimizer(model, optim, lr, momentum=0.0):
         raise RuntimeError("wrong type of optimizer - must be 'sgd', 'adam' or 'signum'")
 
 
-def _get_scheduler(optimizer, lr_warmup):
+def _get_scheduler(optimizer, optim_params, total_iterations):
+    lr_warmup = optim_params["lr_warmup"]
     if lr_warmup > 0:
-        return torch.optim.lr_scheduler.LambdaLR(
+        cosine_decay = optim_params["cosine_decay"]
+        if cosine_decay:
+            eta_min = optim_params["eta_min"]
+            scheduler1 = optim.lr_scheduler.LambdaLR(
+                optimizer, lambda ep: min(1, ep / lr_warmup)
+            )
+            scheduler2 = optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max = total_iterations, eta_min = eta_min,
+            )
+            return optim.lr_scheduler.SequentialLR(
+                optimizer, schedulers = [scheduler1, scheduler2], milestones = [lr_warmup + 1]
+            )
+        return optim.lr_scheduler.LambdaLR(
             optimizer, lambda ep: min(1, ep / lr_warmup)
         )
     return None
 
 
-def get_optimizer_and_scheduler(model, optim_params):
+def get_optimizer_and_scheduler(model, optim_params, trainer_params):
     momentum = optim_params["momentum"]
     
     optimizer = _get_optimizer(
@@ -161,7 +175,10 @@ def get_optimizer_and_scheduler(model, optim_params):
         lr=optim_params["lr"],
         momentum=momentum,
     )
-    scheduler = _get_scheduler(optimizer=optimizer, lr_warmup=optim_params.get("lr_warmup", 0))
+    scheduler = _get_scheduler(optimizer=optimizer,
+                               optim_params = optim_params,
+                               total_iterations = trainer_params["total_iterations"]
+                               )
     return optimizer, scheduler
 
 

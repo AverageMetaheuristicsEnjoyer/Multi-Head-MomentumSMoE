@@ -113,8 +113,9 @@ def launch(
         model = model.to(device)
 
     # OPTIMIZER AND SCHEDULER
+    trainer_params["total_iterations"] = trainer_params["epochs"] * trainer_params["nb_batches_per_iter"]
     optimizer, scheduler = get_optimizer_and_scheduler(
-        model=model, optim_params=optim_params
+        model=model, optim_params=optim_params, trainer_params=trainer_params,
     )
 
     # create logger - only on master process

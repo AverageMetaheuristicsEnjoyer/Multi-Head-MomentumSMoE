@@ -219,6 +219,12 @@ PARAMS_CONFIG = {
             "help": "Learning rate.",
             "dest": "lr"
         },
+        "--eta-min": {
+            "type": float,
+            "default": 0.001,
+            "help": "Minimal learning rate.",
+            "dest": "eta_min",
+        },
         "--optim": {
             "type": str,
             "default": "adam",
@@ -243,6 +249,12 @@ PARAMS_CONFIG = {
             "help": "Clip the gradient norm.",
             "dest": "clip"
         },
+        "--cosine-decay": {
+            "action": "store_true",
+            "default": False,
+            "help": "Use cosine decay after warmup.",
+            "dest": "cosine_decay",
+        }
     },
     "trainer_params": {
          "--epochs": {
