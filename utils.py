@@ -262,9 +262,10 @@ def _load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distr
 
 def load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distributed, sharded, resume, wandb_params):
     if resume:
-        run_id = wandb_params.get("run_id", None)
-        wandb.init(project=wandb_params["project_name"], id = run_id, resume = "allow")
-        wandb_flag = wandb_params.get("wandb_flag", False)
+        wandb_flag = wandb_params["wandb_flag"]
+        if wandb_flag:
+            run_id = wandb_params.get("run_id", None)
+            wandb.init(project=wandb_params["project_name"], id = run_id, resume = "allow")
         if os.path.exists(checkpoint_path):
             return _load_checkpoint(
                 checkpoint_path=checkpoint_path,
