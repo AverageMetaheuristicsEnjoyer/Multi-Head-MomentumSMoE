@@ -319,7 +319,7 @@ def save_checkpoint(
             }
 
         if scheduler is not None:
-            checkpoint_state["scheduler"] = scheduler.state_dict(),
+            checkpoint_state["scheduler"] = scheduler.state_dict()
         torch.save(checkpoint_state, checkpoint_path)
 
         if wandb_flag and (wandb_save_every > 0 and nb_batches_per_iter % wandb_save_every == 0):
