@@ -249,16 +249,14 @@ def _load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distr
                 strict = True,
             )
         )
-        if scheduler is not None and "scheduler_iter" in checkpoint_state:
-            # we only need the step count
-            scheduler.step(checkpoint_state["scheduler_iter"])
+        if scheduler is not None:
+            scheduler.load_state_dict(checkpoint_state["scheduler"])
         return iter_init
     
     model.load_state_dict(checkpoint_state["app"]["model"])
     optimizer.load_state_dict(checkpoint_state["app"]["optim"])
-    if scheduler is not None and "scheduler_iter" in checkpoint_state:
-        # we only need the step count
-        scheduler.step(checkpoint_state["scheduler_iter"])
+    if scheduler is not None:
+        scheduler.load_state_dict(checkpoint_state["scheduler"])
     return iter_init
 
 
@@ -310,7 +308,6 @@ def save_checkpoint(
             checkpoint_state = torch.load(checkpoint_path, weights_only=True)
 
             checkpoint_state["nb_batches_per_iter"] = nb_batches_per_iter
-        
         else:
             state_dict = {
                 "model": model.state_dict(),
@@ -322,7 +319,7 @@ def save_checkpoint(
             }
 
         if scheduler is not None:
-            checkpoint_state["scheduler_iter"] = scheduler.last_epoch
+            checkpoint_state["scheduler"] = scheduler.state_dict(),
         torch.save(checkpoint_state, checkpoint_path)
 
         if wandb_flag and (wandb_save_every > 0 and nb_batches_per_iter % wandb_save_every == 0):
