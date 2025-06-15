@@ -599,6 +599,27 @@ class TransformerSeqLayer(nn.Module):
                 layerth = layerth,
             )
             if g == "u"
+            else
+            MarsLayer(
+                hidden_size = hidden_size,
+                inner_hidden_size = inner_hidden_size,
+                dropout = dropout,
+                gate = gate,
+                num_experts = num_experts,
+                moe_top_k = moe_top_k,
+                mhmoe_num_heads = mhmoe_num_heads,
+                mhmoe_beta = mhmoe_beta,
+                gamma1 = gamma1,
+                gamma2 = gamma2,
+                mu = mu,
+                use_xmoe = use_xmoe,
+                xmoe_dim = xmoe_dim,
+                world_size = world_size,
+                beta1 = beta1,
+                beta2 = beta2,
+                layerth = layerth,
+            )
+            if g == "r"
             else None
         )
 
@@ -714,6 +735,13 @@ class TransformerSeq(nn.Module):
                 torch.zeros_like(h),
                 torch.zeros_like(h),
                 )
+        elif "r" in self.arch:
+            momentum = (
+                torch.zeros_like(h),
+                torch.zeros_like(h),
+                torch.zeros(1, device = h.device, dtype = torch.long),
+                torch.zeros_like(h),
+            )
         else: # in case of no momentum --mu will be set to zero
             momentum = torch.zeros_like(h)
         
