@@ -394,6 +394,74 @@ class SignumLayer(FMoETransformerMLP):
         
         return output, signum
 
+class MarsLayer(FMoETransformerMLP):
+    def __init__(
+        self,
+        hidden_size,
+        inner_hidden_size,
+        dropout,
+        gate,
+        num_experts,
+        moe_top_k,
+        mhmoe_num_heads,
+        mhmoe_beta,
+        gamma1,
+        gamma2,
+        mu,
+        use_xmoe,
+        xmoe_dim,
+        world_size,
+        beta1,
+        beta2,
+        layerth,
+    ):
+        activation = nn.Sequential(nn.ReLU(), nn.Dropout(dropout))
+        super().__init__(
+            hidden_size = hidden_size,
+            inner_hidden_size = inner_hidden_size,
+            activation = activation,
+            gate = gate,
+            num_experts = num_experts,
+            moe_top_k = moe_top_k,
+            mhmoe_num_heads = mhmoe_num_heads,
+            mhmoe_beta = mhmoe_beta,
+            use_xmoe = use_xmoe,
+            xmoe_dim = xmoe_dim,
+            world_size = world_size,
+        )
+        self.gamma1 = gamma1
+        self.gamma2 = gamma2
+        self.mu = mu
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.layerth = layerth
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, inp, hist):
+        moe_out = super().forward(inp)
+        moe_out = super.dropout(moe_out)
+
+        m, v, step_count, moe_out_prev = hist
+        step_count += 1
+        step = step_count.item()
+        bias_correction_m = 1.0 - self.beta1 ** step
+        bias_correction_v = 1.0 - self.beta2 ** step
+
+        c = moe_out + 0.025 * (self.beta1 / (1 - self.beta1)) * (moe_out - moe_out_prev)
+        c_norm = torch.linalg.matrix_norm(c, dim = (-2, -1), ord = "fro")
+        batch_idx = torch.where(c_norm > 1)
+        c[batch_idx] /= c_norm[batch_idx]
+        
+        m_t = self.beta1 * m + (1 - self.beta1) * c
+        v_t = self.beta2 * v + (1 - self.beta2) * c**2
+
+        m_t /= bias_correction_m
+        v_t /= bias_correction_v
+
+        out = inp + self.gamma1 * m_t / (torch.sqrt(v_t + 1e-8))
+
+        return out, (m_t, v_t, step_count, moe_out)
+
 class TransformerSeqLayer(nn.Module):
     def __init__(
         self,
