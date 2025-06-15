@@ -129,11 +129,11 @@ def _get_grad_requiring_params(model):
 
 def _get_optimizer(model, optim, lr, momentum=0.0):
     if optim == "sgd":
-        return optim.SGD(
+        return torch.optim.SGD(
             _get_grad_requiring_params(model), lr=lr, momentum=momentum
         )
     elif optim == "adam":
-        return optim.Adam(
+        return torch.optim.Adam(
             _get_grad_requiring_params(model),
             lr=lr,
         )
