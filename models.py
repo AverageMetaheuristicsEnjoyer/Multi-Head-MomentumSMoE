@@ -447,7 +447,7 @@ class MarsLayer(FMoETransformerMLP):
         bias_correction_m = 1.0 - self.beta1 ** step
         bias_correction_v = 1.0 - self.beta2 ** step
 
-        c = moe_out + 0.025 * (self.beta1 / (1 - self.beta1)) * (moe_out - moe_out_prev)
+        c = moe_out + self.gamma2 * (self.beta1 / (1 - self.beta1)) * (moe_out - moe_out_prev)
         c_norm = torch.linalg.matrix_norm(c, dim = (-2, -1), ord = "fro")
         batch_idx = c_norm > 1
         scaling_facs = torch.ones_like(c_norm)
