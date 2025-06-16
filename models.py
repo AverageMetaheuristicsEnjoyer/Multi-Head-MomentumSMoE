@@ -439,8 +439,8 @@ class MarsLayer(FMoETransformerMLP):
 
     def forward(self, inp, hist):
         moe_out = super().forward(inp)
-        moe_out = super.dropout(moe_out)
-
+        moe_out = self.dropout(moe_out)
+        
         m, v, step_count, moe_out_prev = hist
         step_count += 1
         step = step_count.item()
@@ -449,11 +449,13 @@ class MarsLayer(FMoETransformerMLP):
 
         c = moe_out + 0.025 * (self.beta1 / (1 - self.beta1)) * (moe_out - moe_out_prev)
         c_norm = torch.linalg.matrix_norm(c, dim = (-2, -1), ord = "fro")
-        batch_idx = torch.where(c_norm > 1)
-        c[batch_idx] /= c_norm[batch_idx]
+        batch_idx = c_norm > 1
+        scaling_facs = torch.ones_like(c_norm)
+        scaling_facs[batch_idx] = c_norm[batch_idx]
+        c_t = c / scaling_facs.view(-1, 1, 1)
         
-        m_t = self.beta1 * m + (1 - self.beta1) * c
-        v_t = self.beta2 * v + (1 - self.beta2) * c**2
+        m_t = self.beta1 * m + (1 - self.beta1) * c_t
+        v_t = self.beta2 * v + (1 - self.beta2) * c_t**2
 
         m_t /= bias_correction_m
         v_t /= bias_correction_v
@@ -515,7 +517,7 @@ class TransformerSeqLayer(nn.Module):
             else None
         )
         
-        self.use_smoe = g in ["m", "a", "e"]
+        self.use_smoe = g in ["m", "a", "e", "r"]
         self.smoe = (
             MomentumLayer(
                 hidden_size = hidden_size,
