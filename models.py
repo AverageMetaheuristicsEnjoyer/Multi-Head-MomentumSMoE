@@ -460,7 +460,7 @@ class MarsLayer(FMoETransformerMLP):
         m_t /= bias_correction_m
         v_t /= bias_correction_v
 
-        out = inp + self.gamma1 * m_t / (torch.sqrt(v_t + 1e-8))
+        out = inp - self.gamma1 * m_t / (torch.sqrt(v_t + 1e-8))
 
         return out, (m_t, v_t, step_count, moe_out)
 
