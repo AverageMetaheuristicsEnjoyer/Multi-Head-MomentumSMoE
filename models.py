@@ -463,6 +463,68 @@ class MarsLayer(FMoETransformerMLP):
         out = inp - self.gamma1 * m_t / (torch.sqrt(v_t + 1e-8))
 
         return out, (m_t, v_t, step_count, moe_out)
+    
+class MarsLionLayer(FMoETransformerMLP):
+    def __init__(
+        self,
+        hidden_size,
+        inner_hidden_size,
+        dropout,
+        gate,
+        num_experts,
+        moe_top_k,
+        mhmoe_num_heads,
+        mhmoe_beta,
+        gamma1,
+        gamma2,
+        mu,
+        use_xmoe,
+        xmoe_dim,
+        world_size,
+        beta1,
+        beta2,
+        layerth,
+    ):
+        activation = nn.Sequential(nn.ReLU(), nn.Dropout(dropout))
+        super().__init__(
+            hidden_size = hidden_size,
+            inner_hidden_size = inner_hidden_size,
+            activation = activation,
+            gate = gate,
+            num_experts = num_experts,
+            moe_top_k = moe_top_k,
+            mhmoe_num_heads = mhmoe_num_heads,
+            mhmoe_beta = mhmoe_beta,
+            use_xmoe = use_xmoe,
+            xmoe_dim = xmoe_dim,
+            world_size = world_size,
+        )
+        self.gamma1 = gamma1
+        self.gamma2 = gamma2
+        self.mu = mu
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.layerth = layerth
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, inp, hist):
+        moe_out = super().forward(inp)
+        moe_out = self.dropout(moe_out)
+        
+        m, v, step_count, moe_out_prev = hist
+
+        c = moe_out + self.gamma2 * (self.beta1 / (1 - self.beta1)) * (moe_out - moe_out_prev)
+        c_norm = torch.linalg.matrix_norm(c, dim = (-2, -1), ord = "fro")
+        batch_idx = c_norm > 1
+        scaling_facs = torch.ones_like(c_norm)
+        scaling_facs[batch_idx] = c_norm[batch_idx]
+        c_t = c / scaling_facs.view(-1, 1, 1)
+        
+        m_t = self.beta1 * m + (1 - self.beta1) * c_t
+
+        out = inp - self.gamma1 * torch.sign(m_t)
+
+        return out, (m_t, v, step_count, moe_out)
 
 class TransformerSeqLayer(nn.Module):
     def __init__(
@@ -517,7 +579,7 @@ class TransformerSeqLayer(nn.Module):
             else None
         )
         
-        self.use_smoe = g in ["m", "a", "e", "r"]
+        self.use_smoe = g in ["m", "a", "e", "r", "l"]
         self.smoe = (
             MomentumLayer(
                 hidden_size = hidden_size,
@@ -622,6 +684,27 @@ class TransformerSeqLayer(nn.Module):
                 layerth = layerth,
             )
             if g == "r"
+            else
+            MarsLionLayer(
+                hidden_size = hidden_size,
+                inner_hidden_size = inner_hidden_size,
+                dropout = dropout,
+                gate = gate,
+                num_experts = num_experts,
+                moe_top_k = moe_top_k,
+                mhmoe_num_heads = mhmoe_num_heads,
+                mhmoe_beta = mhmoe_beta,
+                gamma1 = gamma1,
+                gamma2 = gamma2,
+                mu = mu,
+                use_xmoe = use_xmoe,
+                xmoe_dim = xmoe_dim,
+                world_size = world_size,
+                beta1 = beta1,
+                beta2 = beta2,
+                layerth = layerth,
+            )
+            if g == "l"
             else None
         )
 
@@ -737,7 +820,7 @@ class TransformerSeq(nn.Module):
                 torch.zeros_like(h),
                 torch.zeros_like(h),
                 )
-        elif "r" in self.arch:
+        elif "r" or "l" in self.arch:
             momentum = (
                 torch.zeros_like(h),
                 torch.zeros_like(h),
