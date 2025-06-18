@@ -817,7 +817,7 @@ class TransformerSeq(nn.Module):
                 torch.zeros_like(h),
                 torch.zeros_like(h),
                 )
-        elif "r" or "l" in self.arch:
+        elif "r" in self.arch or "l" in self.arch:
             momentum = (
                 torch.zeros_like(h),
                 torch.zeros_like(h),
