@@ -317,8 +317,8 @@ class AdEMAMixLayer(FMoETransformerMLP):
             
             step_count += 1
             step = step_count.item()
-            bias_correction1 = 1.0 - self.beta1 ** step
-            bias_correction2 = 1.0 - self.beta2 ** step
+            # bias_correction1 = 1.0 - self.beta1 ** step
+            # bias_correction2 = 1.0 - self.beta2 ** step
 
             if self.alpha_warmup:
                 alpha_t = linear_warmup_scheduler(step, alpha_end = self.alpha, alpha_start = 0, warmup = self.alpha_warmup)
@@ -335,8 +335,8 @@ class AdEMAMixLayer(FMoETransformerMLP):
             m2_new = beta3_t * m2 + (1 - beta3_t) * moe_out
             momentum = self.mu * momentum[4] + self.gamma2 * moe_out
             
-            denom = torch.sqrt(v_new / bias_correction2 + 1e-8)
-            update = (m1_new / bias_correction1 + alpha_t * m2_new) / denom
+            denom = torch.sqrt(v_new + 1e-8)
+            update = (m1_new + alpha_t * m2_new) / denom
             
             if self.weight_decay > 0:
                 update = update + self.weight_decay * inp
