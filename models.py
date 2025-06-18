@@ -307,16 +307,6 @@ class AdEMAMixLayer(FMoETransformerMLP):
         self.dropout = nn.Dropout(dropout)
         self.lr_min = gamma_min
         self.lr_max = gamma_max
-    
-    def cosine_decay_warmup(self, step):
-        if step <= self.warmup_steps:
-            multiplier = step / self.warmup_steps
-        else:
-            multiplier = (step - self.warmup_steps) / (self.total_steps - self.warmup_steps)
-            multiplier = 0.5 * (1 + math.cos(math.pi * multiplier))
-        
-        self.gamma1 = self.lr_max * multiplier
-        return self.gamma1
 
     def forward(self, inp, momentum):
         moe_out = super().forward(inp)
@@ -327,7 +317,6 @@ class AdEMAMixLayer(FMoETransformerMLP):
             
             step_count += 1
             step = step_count.item()
-            gamma1 = self.cosine_decay_warmup(step)
             bias_correction1 = 1.0 - self.beta1 ** step
             bias_correction2 = 1.0 - self.beta2 ** step
 
@@ -352,7 +341,7 @@ class AdEMAMixLayer(FMoETransformerMLP):
             if self.weight_decay > 0:
                 update = update + self.weight_decay * inp
             
-            output = inp - gamma1 * update
+            output = inp - self.gamma1 * update
             
             return output, (m1_new, v_new, m2_new, step_count, momentum)
         else:
