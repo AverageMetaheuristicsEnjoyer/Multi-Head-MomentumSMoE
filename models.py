@@ -443,9 +443,9 @@ class MarsLayer(FMoETransformerMLP):
         
         m, v, step_count, moe_out_prev = hist
         step_count += 1
-        step = step_count.item()
-        bias_correction_m = 1.0 - self.beta1 ** step
-        bias_correction_v = 1.0 - self.beta2 ** step
+        # step = step_count.item()
+        # bias_correction_m = 1.0 - self.beta1 ** step
+        # bias_correction_v = 1.0 - self.beta2 ** step
 
         c = moe_out + self.gamma2 * (self.beta1 / (1 - self.beta1)) * (moe_out - moe_out_prev)
         c_norm = torch.linalg.matrix_norm(c, dim = (-2, -1), ord = "fro")
@@ -457,8 +457,8 @@ class MarsLayer(FMoETransformerMLP):
         m_t = self.beta1 * m + (1 - self.beta1) * c_t
         v_t = self.beta2 * v + (1 - self.beta2) * c_t**2
 
-        m_t /= bias_correction_m
-        v_t /= bias_correction_v
+        # m_t /= bias_correction_m
+        # v_t /= bias_correction_v
 
         out = inp - self.gamma1 * m_t / (torch.sqrt(v_t + 1e-8))
 
