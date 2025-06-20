@@ -106,7 +106,6 @@ def launch(
             model,
             device_ids=[local_rank],
             output_device=local_rank,
-            find_unused_parameters=True,
         )
     else:
         model = torch.nn.DataParallel(model)
