@@ -17,7 +17,7 @@ from torch.distributed.checkpoint.state_dict import (
 )
 from torch.distributed.checkpoint.format_utils import dcp_to_torch_save, torch_save_to_dcp
 import torch.distributed.checkpoint as dcp
-from torch.distributed.checkpoint.stateful import Stateful
+from torch.distributed.tensor import DTensor
 import tqdm
 from gates import CustomNaiveGate_Balance_SMoE, MHMoEGate
 import wandb
@@ -186,36 +186,6 @@ def get_optimizer_and_scheduler(model, optim_params, trainer_params):
 # CHECKPOINT
 ##############################################################################
 
-class AppState(Stateful):
-    """This is a useful wrapper for checkpointing the Application State. Since this object is compliant
-    with the Stateful protocol, DCP will automatically call state_dict/load_stat_dict as needed in the
-    dcp.save/load APIs.
-
-    Note: We take advantage of this wrapper to hande calling distributed state dict methods on the model
-    and optimizer.
-    """
-
-    def __init__(self, model, optimizer=None):
-        self.model = model
-        self.optimizer = optimizer
-
-    def state_dict(self):
-        # this line automatically manages FSDP FQN's, as well as sets the default state dict type to FSDP.SHARDED_STATE_DICT
-        model_state_dict, optimizer_state_dict = get_state_dict(self.model, self.optimizer)
-        return {
-            "model": model_state_dict,
-            "optim": optimizer_state_dict
-        }
-
-    def load_state_dict(self, state_dict):
-        # sets our state dicts on the model and optimizer, now that we've loaded
-        set_state_dict(
-            self.model,
-            self.optimizer,
-            model_state_dict=state_dict["model"],
-            optim_state_dict=state_dict["optim"]
-        )
-
 def _load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distributed, sharded):
     print("loading from a checkpoint at {}".format(checkpoint_path))
     if distributed:
@@ -295,20 +265,57 @@ def load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distri
             print("Failed to load checkpoint")
     return 0
 
+def get_full_model_state_dict(model):
+    sharded_sd = model.state_dict()
+    cpu_state_dict = {}
+    for param_name, sharded_param in sharded_sd.items():
+        full_param = sharded_param.full_tensor()
+        if torch.distributed.get_rank() == 0:
+            cpu_state_dict[param_name] = full_param.cpu()
+        else:
+            del full_param
+    return cpu_state_dict
+
+def get_full_optimizer_state_dict(optimizer):
+    is_rank_zero = torch.distributed.get_rank() == 0
+    sharded_sd = optimizer.state_dict()
+    sharded_state = sharded_sd["state"]
+    full_state = {}
+    for group_id, sharded_group in sharded_state.items():
+        group_state = {}
+        for attr, sharded_tensor in sharded_group.items():
+            if isinstance(sharded_tensor, DTensor):
+                full_tensor = sharded_tensor.full_tensor()
+            else:
+                full_tensor = sharded_tensor
+            if is_rank_zero:
+                group_state[attr] = full_tensor.cpu()
+            else:
+                del full_tensor
+        if is_rank_zero:
+            full_state[group_id] = group_state
+        else:
+            del group_state
+    if is_rank_zero:
+        return {
+            "param_groups": sharded_sd["param_groups"],
+            "state": full_state,
+        }
+    return {}
 
 def save_checkpoint(
     checkpoint_path, nb_batches_per_iter, model, optimizer, scheduler, sharded, wandb_flag, wandb_save_every
 ):
     if checkpoint_path:
-        if sharded:        
-            state_dict = {"app": AppState(model, optimizer)}
-            dcp.save(state_dict, checkpoint_id = os.path.dirname(checkpoint_path))
-
-            # ugly workaround
-            dcp_to_torch_save(os.path.dirname(checkpoint_path), checkpoint_path)
-            checkpoint_state = torch.load(checkpoint_path, weights_only=True)
-
-            checkpoint_state["nb_batches_per_iter"] = nb_batches_per_iter
+        if sharded:      
+            app_dict = {
+                "model": get_full_model_state_dict(model),
+                "optim": get_full_optimizer_state_dict(optimizer),
+            }
+            checkpoint_state = {
+                "nb_batches_per_iter": nb_batches_per_iter,
+                "app": app_dict,
+            }
         else:
             state_dict = {
                 "model": model.state_dict(),
