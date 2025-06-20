@@ -156,7 +156,7 @@ def full_eval(model, optimizer, scheduler, data, block_size, hidden_size):
             model.layers[layer_i].attn.attn.get_cache_size(),
             hidden_size,
         ).to(data.device)
-        for layer_i in range(model.attn_layer_count)
+        for layer_i in range(model.module.attn_layer_count)
     ]
 
     loss_all = 0
