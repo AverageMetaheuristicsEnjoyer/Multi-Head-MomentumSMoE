@@ -153,7 +153,7 @@ def full_eval(model, optimizer, scheduler, data, block_size, hidden_size):
     h_cache = [
         torch.zeros(
             data.size(0),
-            model.layers[layer_i].attn.attn.get_cache_size(),
+            model.module.layers[layer_i].attn.attn.get_cache_size(),
             hidden_size,
         ).to(data.device)
         for layer_i in range(model.module.attn_layer_count)
