@@ -328,7 +328,17 @@ def save_checkpoint(
 
         if scheduler is not None:
             checkpoint_state["scheduler"] = scheduler.state_dict()
-        torch.save(checkpoint_state, checkpoint_path)
+        
+        # for some unknown reason without this trick
+        # the checkpoint on the cluster becomes corrupted
+        temp_checkpoint_path = checkpoint_path + ".tmp"
+        try:
+            torch.save(checkpoint_state, temp_checkpoint_path)
+            os.rename(temp_checkpoint_path, checkpoint_path)
+        except Exception as e:
+            print(f"Error saving checkpoint: {e}")
+            if os.path.exists(temp_checkpoint_path):
+                os.remove(temp_checkpoint_path)
 
         if wandb_flag and (wandb_save_every > 0 and nb_batches_per_iter % wandb_save_every == 0):
             model_artifact = wandb.Artifact(
