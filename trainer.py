@@ -39,7 +39,7 @@ def _train_batch(
     h_cache,
     eval_only,
     batch_split,
-    clip
+    clip = 1.0,
 ):
     """Train on a batch."""
 
