@@ -114,7 +114,7 @@ PARAMS_CONFIG = {
         "--gate-name": {
             "type": str,
             "default": "smoe",
-            "help": "Type of MoE gate: 'smoe' or 'mhmoe'.",
+            "help": "Type of MoE gate: 'smoe', 'mhmoe' or 'ef21'.",
             "dest": "gate_name",
         },
          "--load-balance": {
@@ -211,6 +211,11 @@ PARAMS_CONFIG = {
             "help": "Dimension for X-MoE's low-dimensional projection for routing.",
             "dest": "xmoe_dim",
         },
+        "--use-ef21": {
+            "action": "store_true",
+            "help": "Use EF21 routing.",
+            "dest": "use_ef21",
+        }
     },
     "optim_params": {
         "--lr": {

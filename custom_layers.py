@@ -118,6 +118,7 @@ class FMoE(nn.Module):
         mask_dict=None,
         use_xmoe = False,
         xmoe_dim = 8,
+        use_ef21 = False,
     ):
         super().__init__()
         self.num_expert = num_expert
@@ -160,6 +161,7 @@ class FMoE(nn.Module):
         self.mask = mask
         self.mask_dict = mask_dict
         self.moe_group = moe_group
+        self.use_ef21 = use_ef21
 
     def expert_fn(self, inp, fwd_expert_count):
         r"""
@@ -200,6 +202,8 @@ class FMoE(nn.Module):
         according to the gate.  The score of the selected gate given by the
         expert is multiplied to the experts' output tensors as a weight.
         """
+        if self.use_ef21:
+            moe_inp, g_t = moe_inp
 
         moe_inp_batch_size = tree.flatten(
             tree.map_structure(lambda tensor: tensor.shape[0], moe_inp)
@@ -223,7 +227,10 @@ class FMoE(nn.Module):
 
             moe_inp = tree.map_structure(slice_func, moe_inp)
 
-        gate_top_k_idx, gate_score = self.gate(moe_inp)
+        if self.use_ef21:
+            gate_top_k_idx, gate_score, new_g_t = self.gate(moe_inp, g_t)
+        else:
+            gate_top_k_idx, gate_score = self.gate(moe_inp)
 
         if hasattr(self.gate, "dynamic_top_k"):
             self.top_k = self.gate.dynamic_top_k
@@ -307,6 +314,8 @@ class FMoE(nn.Module):
         assert all(
             [batch_size == moe_outp_batch_size[0] for batch_size in moe_outp_batch_size]
         ), "MoE outputs must have the same batch size"
+        if self.use_ef21:
+            return moe_outp, new_g_t
         return moe_outp
 
 

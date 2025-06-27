@@ -50,6 +50,7 @@ class FMoETransformerMLP(FMoE):
         use_xmoe,
         xmoe_dim,
         world_size,
+        use_ef21,
         expert_dp_comm = "none",
         expert_rank = 0,
     ):
@@ -61,6 +62,7 @@ class FMoETransformerMLP(FMoE):
             world_size=world_size,
             use_xmoe = use_xmoe,
             xmoe_dim = xmoe_dim,
+            use_ef21 = use_ef21,
         )
 
         self.experts = _Expert(
@@ -81,10 +83,10 @@ class FMoETransformerMLP(FMoE):
             self.merge_layer = nn.Linear(hidden_size, hidden_size)
             nn.init.xavier_uniform_(self.merge_layer.weight)
             nn.init.constant_(self.merge_layer.bias, 0.0)
-        
+        self.use_ef21 = use_ef21
         self.mark_parallel_comm(expert_dp_comm)
     
-    def forward(self, inp): 
+    def forward(self, inp, g_t): 
         original_shape = inp.shape
         reshaped_inp = inp.reshape(-1, self.hidden_size)
         if self.mhmoe_num_heads > 1:
@@ -100,6 +102,6 @@ class FMoETransformerMLP(FMoE):
             out = out.reshape(N, self.hidden_size).contiguous()
             out = self.merge_layer(out)
         else:
-            out = super().forward(reshaped_inp)
+            out, g_t = super().forward((reshaped_inp, g_t))
         out = out.reshape(original_shape)
-        return out
+        return out, g_t

@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from custom_transformer import FMoETransformerMLP
-from gates import CustomNaiveGate_Balance_SMoE, MHMoEGate
+from gates import CustomNaiveGate_Balance_SMoE, MHMoEGate, EF21Gate
 
 # Size notations:
 # B = batch_size, H = hidden_size, M = block_size, L = attn_span
@@ -128,6 +128,7 @@ class MomentumLayer(FMoETransformerMLP):
         mu,
         use_xmoe,
         xmoe_dim,
+        use_ef21,
         world_size,
     ):
         activation = nn.Sequential(nn.ReLU(), nn.Dropout(dropout))
@@ -142,22 +143,24 @@ class MomentumLayer(FMoETransformerMLP):
             mhmoe_beta = mhmoe_beta,
             use_xmoe = use_xmoe,
             xmoe_dim = xmoe_dim,
+            use_ef21 = use_ef21,
             world_size = world_size,
         )
         self.gamma = gamma
         self.mu = mu
         self.dropout = nn.Dropout(dropout)
-        # self.layer_norm = nn.LayerNorm(hidden_size)
+        self.use_ef21 = use_ef21
 
-
-    def forward(self, inp, momentum):
-        moe_out = super().forward(inp)
+    def forward(self, inp, momentum, g_t):
+        if self.use_ef21:
+            moe_out, g_t = super().forward(inp, g_t)
+        else:
+            moe_out = super().forward(inp)
         moe_out = self.dropout(moe_out)
 
         momentum = self.mu * momentum + self.gamma * moe_out
-        # output = self.layer_norm(inp - momentum)
         output = inp - momentum
-        return output, momentum
+        return output, momentum, g_t
 
 class AdamLayer(FMoETransformerMLP):
     def __init__(
@@ -551,6 +554,7 @@ class TransformerSeqLayer(nn.Module):
         rand_zero,
         use_xmoe,
         xmoe_dim,
+        use_ef21,
         world_size,
         s,
         g,
@@ -561,6 +565,8 @@ class TransformerSeqLayer(nn.Module):
             gate = CustomNaiveGate_Balance_SMoE # from SwitchTransformer paper
         elif gate_name == "mhmoe":
             gate = MHMoEGate
+        elif gate_name == "ef21":
+            gate = EF21Gate
         else:
             ValueError("Incorrect gate name")
         
@@ -591,6 +597,7 @@ class TransformerSeqLayer(nn.Module):
                 mu = mu,
                 use_xmoe = use_xmoe,
                 xmoe_dim = xmoe_dim,
+                use_ef21 = use_ef21,
                 world_size = world_size,
             )
             if g == "m"
@@ -708,7 +715,7 @@ class TransformerSeqLayer(nn.Module):
         self.norm1 = nn.LayerNorm(hidden_size)
         self.norm2 = nn.LayerNorm(hidden_size)
     
-    def forward(self, h, h_cache, pos_encoding, momentum):
+    def forward(self, h, h_cache, pos_encoding, momentum, g_t):
         # h = B x M x H
         # h_cache = B x L x H
         if self.use_attn:
@@ -716,9 +723,9 @@ class TransformerSeqLayer(nn.Module):
             attn_out = self.attn(h, h_all, h_all, pos_encoding)
             h = self.norm1(h + attn_out) # B x M x H
         if self.use_smoe:
-            smoe_out, momentum = self.smoe(h, momentum)
+            smoe_out, momentum, g_t = self.smoe(h, momentum, g_t)
             h = self.norm2(h + smoe_out) # B x M x H
-        return h, momentum
+        return h, momentum, g_t
 
 class TransformerSeq(nn.Module):
     def __init__(
@@ -751,6 +758,7 @@ class TransformerSeq(nn.Module):
         rand_zero,
         use_xmoe,
         xmoe_dim,
+        use_ef21,
         world_size,
         **kwargs,
     ):
@@ -790,6 +798,7 @@ class TransformerSeq(nn.Module):
                 weight_decay = weight_decay,
                 use_xmoe = use_xmoe,
                 xmoe_dim = xmoe_dim,
+                use_ef21 = use_ef21,
                 rand_zero = rand_zero,
                 world_size = world_size,
                 s = self.arch[2 * i],
@@ -826,6 +835,7 @@ class TransformerSeq(nn.Module):
             )
         else: # in case of no momentum --mu will be set to zero
             momentum = torch.zeros_like(h)
+            g_t = torch.zeros(block_size * x.size(0), 16, device = h.device)
         
         for i, layer in enumerate(self.layers):
             if layer.use_attn:
@@ -838,7 +848,8 @@ class TransformerSeq(nn.Module):
                 else:
                     h_cache_next_l = h[:, -cache_size:, :].detach()
                 h_cache_next.append(h_cache_next_l)
-                h, momentum = layer(h, h_cache[i], self.pos_encoding, momentum) # B x M x H
+                # TODO: if else about g_t ?
+                h, momentum, g_t = layer(h, h_cache[i], self.pos_encoding, momentum, g_t) # B x M x H
             else:
                 # TODO: is this branch even necesarry in our case?
                 h = layer(h, [], self.pos_encoding)

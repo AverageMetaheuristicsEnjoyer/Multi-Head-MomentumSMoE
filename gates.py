@@ -76,6 +76,34 @@ class CustomNaiveGate_Balance_SMoE(BaseGate):
         if return_all_scores:
             return gate_top_k_idx, gate_score, gate
         return gate_top_k_idx, gate_score
+    
+class EF21Gate(BaseGate):
+    def __init__(self, d_model, num_expert, world_size, top_k=2):
+        super().__init__(num_expert, world_size)
+        self.gate = nn.Linear(d_model, self.tot_expert)
+        self.top_k = top_k
+        self.loss = None
+
+    def forward(self, inp, g_t):
+        gate = self.gate(inp)
+
+        gate = gate - g_t.detach()
+
+        gate_top_k_val, gate_top_k_idx = torch.topk(
+            gate, k=self.top_k, dim=-1, largest=True, sorted=False
+        )
+
+        c_t = torch.zeros_like(gate)
+        c_t = c_t.scatter_(
+            dim = -1,
+            index = gate_top_k_idx,
+            src = gate_top_k_val,
+        )
+        new_g_t = g_t + c_t
+
+        gate_score = F.softmax(gate_top_k_val.view(-1, self.top_k), dim=-1)
+
+        return gate_top_k_idx, gate_score, new_g_t
 
 def _one_hot_with_dtype(data, num_classes, dtype, hot_value=1):
     result = torch.zeros([data.size(0), num_classes], device=data.device, dtype=dtype)
