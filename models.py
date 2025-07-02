@@ -523,6 +523,124 @@ class MarsLionLayer(FMoETransformerMLP):
 
         return out, (m_t, v, step_count, moe_out)
 
+class OptimistAdamLayer(FMoETransformerMLP):
+    def __init__(
+        self,
+        hidden_size,
+        inner_hidden_size,
+        dropout,
+        gate,
+        num_experts,
+        moe_top_k,
+        mhmoe_num_heads,
+        mhmoe_beta,
+        gamma1,
+        gamma2,
+        mu,
+        use_xmoe,
+        xmoe_dim,
+        world_size,
+        beta1,
+        beta2,
+        layerth,
+    ):
+        activation = nn.Sequential(nn.ReLU(), nn.Dropout(dropout))
+        super().__init__(
+            hidden_size = hidden_size,
+            inner_hidden_size = inner_hidden_size,
+            activation = activation,
+            gate = gate,
+            num_experts = num_experts,
+            moe_top_k = moe_top_k,
+            mhmoe_num_heads = mhmoe_num_heads,
+            mhmoe_beta = mhmoe_beta,
+            use_xmoe = use_xmoe,
+            xmoe_dim = xmoe_dim,
+            world_size = world_size,
+        )
+        self.gamma1 = gamma1
+        self.gamma2 = gamma2
+        self.mu = mu
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.layerth = layerth
+        self.dropout = nn.Dropout(dropout)
+        self.layer_norm = nn.LayerNorm(hidden_size)
+        self.layerth = layerth
+
+    def forward(self, inp, hist):        
+        moe_out = super().forward(self.layer_norm(inp))
+        moe_out = self.dropout(moe_out)
+        
+        m, v, momentum, moe_out_prev = hist
+
+        c = (1 + self.gamma2) * moe_out - self.gamma2 * moe_out_prev
+        m_t = m
+        v_t = v
+
+        out = inp - c
+
+        return out, (m_t, v_t, momentum, moe_out)
+
+class OptimistAdamLayerV2(FMoETransformerMLP):
+    def __init__(
+        self,
+        hidden_size,
+        inner_hidden_size,
+        dropout,
+        gate,
+        num_experts,
+        moe_top_k,
+        mhmoe_num_heads,
+        mhmoe_beta,
+        gamma1,
+        gamma2,
+        mu,
+        use_xmoe,
+        xmoe_dim,
+        world_size,
+        beta1,
+        beta2,
+        layerth,
+    ):
+        activation = nn.Sequential(nn.ReLU(), nn.Dropout(dropout))
+        super().__init__(
+            hidden_size = hidden_size,
+            inner_hidden_size = inner_hidden_size,
+            activation = activation,
+            gate = gate,
+            num_experts = num_experts,
+            moe_top_k = moe_top_k,
+            mhmoe_num_heads = mhmoe_num_heads,
+            mhmoe_beta = mhmoe_beta,
+            use_xmoe = use_xmoe,
+            xmoe_dim = xmoe_dim,
+            world_size = world_size,
+        )
+        self.gamma1 = gamma1
+        self.gamma2 = gamma2
+        self.mu = mu
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.layerth = layerth
+        self.dropout = nn.Dropout(dropout)
+        self.layer_norm = nn.LayerNorm(hidden_size)
+
+    def forward(self, inp, hist):
+        moe_out = super().forward(self.layer_norm(inp))
+        moe_out = self.dropout(moe_out)
+        
+        m, v, step_count, moe_out_prev = hist
+        step_count += 1
+
+        c_t = (1 + self.gamma2) * moe_out - self.gamma2 * moe_out_prev
+        m_t = self.beta1 * m + (1 - self.beta1) * c_t
+        v_t = self.beta2 * v + (1 - self.beta2) * c_t**2
+
+        out = inp - self.gamma1 * m_t / (torch.sqrt(v_t + 1e-8))
+
+        return out, (m_t, v_t, step_count, moe_out)
+
 class TransformerSeqLayer(nn.Module):
     def __init__(
         self,
@@ -576,7 +694,7 @@ class TransformerSeqLayer(nn.Module):
             else None
         )
         
-        self.use_smoe = g in ["m", "a", "e", "r", "l"]
+        self.use_smoe = g in ["m", "a", "e", "r", "l", "o", "v"]
         self.smoe = (
             MomentumLayer(
                 hidden_size = hidden_size,
@@ -702,6 +820,48 @@ class TransformerSeqLayer(nn.Module):
                 layerth = layerth,
             )
             if g == "l"
+            else
+            OptimistAdamLayer(
+                hidden_size = hidden_size,
+                inner_hidden_size = inner_hidden_size,
+                dropout = dropout,
+                gate = gate,
+                num_experts = num_experts,
+                moe_top_k = moe_top_k,
+                mhmoe_num_heads = mhmoe_num_heads,
+                mhmoe_beta = mhmoe_beta,
+                gamma1 = gamma1,
+                gamma2 = gamma2,
+                mu = mu,
+                use_xmoe = use_xmoe,
+                xmoe_dim = xmoe_dim,
+                world_size = world_size,
+                beta1 = beta1,
+                beta2 = beta2,
+                layerth = layerth,
+            )
+            if g == "o"
+            else
+            OptimistAdamLayerV2(
+                hidden_size = hidden_size,
+                inner_hidden_size = inner_hidden_size,
+                dropout = dropout,
+                gate = gate,
+                num_experts = num_experts,
+                moe_top_k = moe_top_k,
+                mhmoe_num_heads = mhmoe_num_heads,
+                mhmoe_beta = mhmoe_beta,
+                gamma1 = gamma1,
+                gamma2 = gamma2,
+                mu = mu,
+                use_xmoe = use_xmoe,
+                xmoe_dim = xmoe_dim,
+                world_size = world_size,
+                beta1 = beta1,
+                beta2 = beta2,
+                layerth = layerth,
+            )
+            if g == "v"
             else None
         )
 
@@ -817,11 +977,11 @@ class TransformerSeq(nn.Module):
                 torch.zeros_like(h),
                 torch.zeros_like(h),
                 )
-        elif "r" in self.arch or "l" in self.arch:
+        elif "r" in self.arch or "l" in self.arch or "o" in self.arch or "v" in self.arch:
             momentum = (
                 torch.zeros_like(h),
                 torch.zeros_like(h),
-                torch.zeros(1, device = h.device, dtype = torch.long),
+                torch.zeros_like(h),
                 torch.zeros_like(h),
             )
         else: # in case of no momentum --mu will be set to zero
