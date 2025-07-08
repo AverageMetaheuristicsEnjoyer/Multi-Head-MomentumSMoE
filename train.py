@@ -233,6 +233,8 @@ def launch(
     nb_batches_per_iter = trainer_params["nb_batches_per_iter"]
     num_epochs = trainer_params.get("epochs", 5)
     for iter_no in range(iter_init, num_epochs):
+        if is_master:
+            logging(f"=================== EPOCHS {iter_no} ======================")
         # time storing
         t_sta = time.time()
         loss_train, data_pos[0], hid_cache[0] = train_iteration(
@@ -277,7 +279,6 @@ def launch(
                 continue
                 
         if is_master:
-            logging(f"=================== EPOCHS {iter_no} ======================")
             if ("enwik8" in data_params["data_path"]) or (
                 "text8" in data_params["data_path"]
             ):
