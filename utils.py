@@ -194,10 +194,10 @@ def _load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distr
             checkpoint_path,
             map_location = "cpu",
             mmap = True,
-            weights_only=True,
+            weights_only=False,
         )
     else:
-        checkpoint_state = torch.load(checkpoint_path, weights_only=True)
+        checkpoint_state = torch.load(checkpoint_path, weights_only=False)
     iter_init = checkpoint_state["nb_batches_per_iter"] + 1  # next iteration
     if sharded:
         set_model_state_dict(
@@ -223,7 +223,20 @@ def _load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distr
             scheduler.load_state_dict(checkpoint_state["scheduler"])
         return iter_init
     
-    model.load_state_dict(checkpoint_state["app"]["model"])
+    model_state_dict = checkpoint_state["app"]["model"]
+
+    is_parallel_model = all(key.startswith("module.") for key in model_state_dict.keys())
+    if is_parallel_model:
+        from collections import OrderedDict
+        cleaned_state_dict = OrderedDict()
+        for key, val in model_state_dict.items():
+            name = key[7:]
+            cleaned_state_dict[name] = val
+        model_state_dict = cleaned_state_dict
+    
+    unwrapped_model = model.module if hasattr(model, 'module') else model
+    unwrapped_model.load_state_dict(model_state_dict)
+
     optimizer.load_state_dict(checkpoint_state["app"]["optim"])
     if scheduler is not None:
         scheduler.load_state_dict(checkpoint_state["scheduler"])
