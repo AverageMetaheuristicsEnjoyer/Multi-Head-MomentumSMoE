@@ -221,7 +221,7 @@ PARAMS_CONFIG = {
         },
         "--eta-min": {
             "type": float,
-            "default": 0.001,
+            "default": 7e-6,
             "help": "Minimal learning rate.",
             "dest": "eta_min",
         },
