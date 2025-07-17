@@ -154,9 +154,8 @@ class MomentumLayer(FMoETransformerMLP):
         moe_out = super().forward(inp)
         moe_out = self.dropout(moe_out)
 
-        momentum = self.mu * momentum + self.gamma * moe_out
-        # output = self.layer_norm(inp - momentum)
-        output = inp - momentum
+        momentum = -moe_out + self.mu * momentum
+        output = self.gamma * momentum
         return output, momentum
 
 class AdamLayer(FMoETransformerMLP):
@@ -444,7 +443,9 @@ class MarsLayer(FMoETransformerMLP):
         # bias_correction_m = 1.0 - self.beta1 ** step
         # bias_correction_v = 1.0 - self.beta2 ** step
 
-        c = moe_out + self.gamma2 * (self.beta1 / (1 - self.beta1)) * (moe_out - moe_out_prev)
+        outps_diff = -moe_out - (-moe_out_prev)
+
+        c = -moe_out + self.gamma2 * (self.beta1 / (1 - self.beta1)) * outps_diff
         c_norm = torch.linalg.matrix_norm(c, dim = (-2, -1), ord = "fro")
         batch_idx = c_norm > 1
         scaling_facs = torch.ones_like(c_norm)
@@ -457,9 +458,9 @@ class MarsLayer(FMoETransformerMLP):
         # m_t /= bias_correction_m
         # v_t /= bias_correction_v
 
-        out = inp - self.gamma1 * m_t / (torch.sqrt(v_t + 1e-8))
+        out = self.gamma1 * m_t / (torch.sqrt(v_t + 1e-8))
 
-        return out, (m_t, v_t, step_count, moe_out)
+        return out, (m_t, v_t, step_count, moe_out.detach())
     
 class MarsLionLayer(FMoETransformerMLP):
     def __init__(
@@ -573,14 +574,12 @@ class OptimistAdamLayer(FMoETransformerMLP):
         moe_out = self.dropout(moe_out)
         
         m, v, momentum, moe_out_prev = hist
-
-        c = (1 + self.gamma2) * moe_out - self.gamma2 * moe_out_prev
+        
+        out = (1 + self.gamma2) * (-moe_out) - self.gamma2 * (-moe_out_prev)
         m_t = m
         v_t = v
 
-        out = inp - c
-
-        return out, (m_t, v_t, momentum, moe_out)
+        return out, (m_t, v_t, momentum, moe_out.detach())
 
 class OptimistAdamLayerV2(FMoETransformerMLP):
     def __init__(
@@ -625,21 +624,21 @@ class OptimistAdamLayerV2(FMoETransformerMLP):
         self.layerth = layerth
         self.dropout = nn.Dropout(dropout)
         self.layer_norm = nn.LayerNorm(hidden_size)
+        self.alpha = 0.5
 
     def forward(self, inp, hist):
         moe_out = super().forward(self.layer_norm(inp))
         moe_out = self.dropout(moe_out)
         
-        m, v, step_count, moe_out_prev = hist
-        step_count += 1
+        m, v, mom, moe_out_prev = hist
 
-        c_t = (1 + self.gamma2) * moe_out - self.gamma2 * moe_out_prev
+        c_t = (1 + self.alpha) * (-moe_out) - self.alpha * (-moe_out_prev)
         m_t = self.beta1 * m + (1 - self.beta1) * c_t
         v_t = self.beta2 * v + (1 - self.beta2) * c_t**2
 
-        out = inp - self.gamma1 * m_t / (torch.sqrt(v_t + 1e-8))
+        out = self.gamma1 * m_t / (torch.sqrt(v_t + 1e-8))
 
-        return out, (m_t, v_t, step_count, moe_out)
+        return out, (m_t, v_t, mom, moe_out.detach())
 
 class TransformerSeqLayer(nn.Module):
     def __init__(
