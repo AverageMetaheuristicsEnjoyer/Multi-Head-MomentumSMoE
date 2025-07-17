@@ -52,9 +52,7 @@ class CustomNaiveGate_Balance_SMoE(BaseGate):
             logits, k=self.top_k, dim=-1, largest=True, sorted=False
         )
 
-        router_probs = torch.full_like(logits, float("-inf"))
-        router_probs.scatter_(-1, top_k_indices, top_k_logits)
-        router_probs = F.softmax(router_probs, dim=-1)
+        router_probs = F.softmax(top_k_logits, dim=-1)
 
         if self.training and self.aux_blance:
             self._calculate_load_balance_loss(router_probs, top_k_indices)
