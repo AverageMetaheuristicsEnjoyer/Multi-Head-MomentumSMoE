@@ -3,3 +3,5 @@ fastermoe/
 fastmoe.egg-info/
 __pycache__/
 wandb/
+logs/
+plots/
