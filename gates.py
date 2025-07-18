@@ -37,10 +37,10 @@ class CustomNaiveGate_Balance_SMoE(BaseGate):
     def _calculate_load_balance_loss(self, router_probs, top_k_indices):
         with torch.no_grad():
             one_hot_indices = F.one_hot(top_k_indices, self.tot_expert).float()
-            one_hot_indices = torch.sum(one_hot_indices, dim = 2)
-            f_i = one_hot_indices.mean(dim=(0, 1))
+            one_hot_indices = torch.sum(one_hot_indices, dim = 1)
+            f_i = one_hot_indices.mean(dim=0)
 
-        P_i = torch.mean(router_probs.float(), dim=(0, 1))
+        P_i = torch.mean(router_probs.float(), dim=0)
 
         loss = (f_i * P_i).sum() * self.tot_expert
         self.loss = loss
@@ -52,14 +52,17 @@ class CustomNaiveGate_Balance_SMoE(BaseGate):
             logits, k=self.top_k, dim=-1, largest=True, sorted=False
         )
 
-        router_probs = F.softmax(top_k_logits, dim=-1)
-
+        router_probs = torch.full_like(logits, float("-inf"))
+        router_probs.scatter_(-1, top_k_indices, top_k_logits)
+        router_probs = F.softmax(router_probs, dim=-1)
         if self.training and self.aux_blance:
             self._calculate_load_balance_loss(router_probs, top_k_indices)
+        
+        top_k_scores = torch.gather(router_probs, dim = -1, index = top_k_indices)
 
         if return_all_scores:
-            return top_k_indices, router_probs, logits
-        return top_k_indices, router_probs
+            return top_k_indices, top_k_scores, logits
+        return top_k_indices, top_k_scores
 
 # class EF21Gate(BaseGate):
 #     def __init__(self, d_model, num_expert, world_size, top_k=2):
