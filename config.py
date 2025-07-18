@@ -211,6 +211,16 @@ PARAMS_CONFIG = {
             "help": "Dimension for X-MoE's low-dimensional projection for routing.",
             "dest": "xmoe_dim",
         },
+        "--smome-alpha": {
+            "type": float,
+            "default": 1.0,
+            "dest": "smome_alpha",
+        },
+        "--smome-beta": {
+            "type": float,
+            "default": 0.9,
+            "dest": "smome_beta",
+        },
     },
     "optim_params": {
         "--lr": {

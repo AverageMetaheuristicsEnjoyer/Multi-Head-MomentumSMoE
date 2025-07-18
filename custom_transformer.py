@@ -52,6 +52,7 @@ class FMoETransformerMLP(FMoE):
         world_size,
         expert_dp_comm = "none",
         expert_rank = 0,
+        **kwargs
     ):
         super().__init__(
             num_expert = num_experts,
@@ -61,6 +62,7 @@ class FMoETransformerMLP(FMoE):
             world_size=world_size,
             use_xmoe = use_xmoe,
             xmoe_dim = xmoe_dim,
+            **kwargs
         )
 
         self.experts = _Expert(

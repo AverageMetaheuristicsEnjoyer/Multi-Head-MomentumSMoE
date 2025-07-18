@@ -118,6 +118,7 @@ class FMoE(nn.Module):
         mask_dict=None,
         use_xmoe = False,
         xmoe_dim = 8,
+        **kwargs
     ):
         super().__init__()
         self.num_expert = num_expert
@@ -155,7 +156,7 @@ class FMoE(nn.Module):
                 xmoe_dim,
             )
         else:
-            self.gate = gate(d_model, num_expert, world_size, moe_top_k)
+            self.gate = gate(d_model, num_expert, world_size, moe_top_k, **kwargs)
         self.gate_hook = gate_hook
         self.mask = mask
         self.mask_dict = mask_dict

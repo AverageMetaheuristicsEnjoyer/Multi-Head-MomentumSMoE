@@ -64,6 +64,43 @@ class CustomNaiveGate_Balance_SMoE(BaseGate):
             return top_k_indices, top_k_scores, logits
         return top_k_indices, top_k_scores
 
+class SMoE_Momentum(BaseGate):
+    def __init__(self, d_model, num_expert, world_size,
+                 top_k=2, aux_blance=True, smome_alpha = 1.0, smome_beta = 0.9, **kwargs):
+        super().__init__(num_expert, world_size)
+        self.gate = nn.Linear(d_model, self.tot_expert, bias=False)
+        self.top_k = top_k
+        self.aux_blance = aux_blance
+        self.loss = None
+        self.register_buffer("avg_probs", torch.zeros(self.tot_expert))
+        self.alpha = smome_alpha
+        self.beta = smome_beta
+
+    def forward(self, inp, return_all_scores=False):
+        logits = self.gate(inp)
+
+        if self.training:
+            penalty = self.avg_probs.unsqueeze(0) * self.alpha
+            logits = logits - penalty
+
+        top_k_logits, top_k_indices = torch.topk(
+            logits, k=self.top_k, dim=-1, largest=True, sorted=False
+        )
+        
+        router_probs = torch.full_like(logits, float("-inf"))
+        router_probs.scatter_(-1, top_k_indices, top_k_logits)
+        router_probs = F.softmax(router_probs, dim=-1)
+
+        if self.training:
+            batch_routed_probs = torch.mean(router_probs.float(), dim = 0)
+            self.avg_probs.mul_(self.beta).add_(batch_routed_probs.detach(), alpha = (1.0 - self.beta))
+        
+        top_k_scores = torch.gather(router_probs, dim = -1, index = top_k_indices)
+
+        if return_all_scores:
+            return top_k_indices, top_k_scores, logits
+        return top_k_indices, top_k_scores
+
 # class EF21Gate(BaseGate):
 #     def __init__(self, d_model, num_expert, world_size, top_k=2):
 #         super().__init__(num_expert, world_size)

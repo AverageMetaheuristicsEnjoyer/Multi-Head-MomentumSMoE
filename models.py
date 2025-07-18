@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from custom_transformer import FMoETransformerMLP
-from gates import CustomNaiveGate_Balance_SMoE, MHMoEGate
+from gates import CustomNaiveGate_Balance_SMoE, MHMoEGate, SMoE_Momentum
 
 # Size notations:
 # B = batch_size, H = hidden_size, M = block_size, L = attn_span
@@ -410,6 +410,7 @@ class MarsLayer(FMoETransformerMLP):
         beta1,
         beta2,
         layerth,
+        **kwargs
     ):
         activation = nn.Sequential(nn.ReLU(), nn.Dropout(dropout))
         super().__init__(
@@ -424,6 +425,7 @@ class MarsLayer(FMoETransformerMLP):
             use_xmoe = use_xmoe,
             xmoe_dim = xmoe_dim,
             world_size = world_size,
+            **kwargs
         )
         self.gamma1 = gamma1
         self.gamma2 = gamma2
@@ -665,12 +667,15 @@ class TransformerSeqLayer(nn.Module):
         s,
         g,
         layerth,
+        **kwargs
     ):
         super().__init__()
         if gate_name == "smoe":
             gate = CustomNaiveGate_Balance_SMoE # from SwitchTransformer paper
         elif gate_name == "mhmoe":
             gate = MHMoEGate
+        elif gate_name == "smome":
+            gate = SMoE_Momentum
         else:
             ValueError("Incorrect gate name")
         
@@ -789,6 +794,7 @@ class TransformerSeqLayer(nn.Module):
                 beta1 = beta1,
                 beta2 = beta2,
                 layerth = layerth,
+                **kwargs
             )
             if g == "r"
             else
@@ -946,7 +952,8 @@ class TransformerSeq(nn.Module):
                 world_size = world_size,
                 s = self.arch[2 * i],
                 g = self.arch[2 * i + 1],
-                layerth = i
+                layerth = i,
+                **kwargs
             )
             for i in range(num_layers)
         )
