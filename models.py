@@ -437,11 +437,7 @@ class MarsLayer(FMoETransformerMLP):
         moe_out = super().forward(inp)
         moe_out = self.dropout(moe_out)
         
-        m, v, step_count, moe_out_prev = hist
-        step_count += 1
-        # step = step_count.item()
-        # bias_correction_m = 1.0 - self.beta1 ** step
-        # bias_correction_v = 1.0 - self.beta2 ** step
+        m, v, _, moe_out_prev = hist
 
         outps_diff = -moe_out - (-moe_out_prev)
 
@@ -455,12 +451,9 @@ class MarsLayer(FMoETransformerMLP):
         m_t = self.beta1 * m + (1 - self.beta1) * c_t
         v_t = self.beta2 * v + (1 - self.beta2) * c_t**2
 
-        # m_t /= bias_correction_m
-        # v_t /= bias_correction_v
-
         out = self.gamma1 * m_t / (torch.sqrt(v_t + 1e-8))
 
-        return out, (m_t, v_t, step_count, moe_out.detach())
+        return out, (m_t, v_t, _, moe_out.detach())
     
 class MarsLionLayer(FMoETransformerMLP):
     def __init__(
