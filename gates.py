@@ -72,7 +72,7 @@ class SMoE_Momentum(BaseGate):
         self.top_k = top_k
         self.aux_blance = aux_blance
         self.loss = None
-        self.register_buffer("avg_probs", torch.zeros(self.tot_expert))
+        self.register_buffer("avg_logits", torch.zeros(self.tot_expert))
         self.alpha = smome_alpha
         self.beta = smome_beta
 
@@ -80,20 +80,24 @@ class SMoE_Momentum(BaseGate):
         logits = self.gate(inp)
 
         if self.training:
-            penalty = self.avg_probs.unsqueeze(0) * self.alpha
-            logits = logits - penalty
+            penalty = self.avg_logits.unsqueeze(0) * self.alpha
+            balanced_logits = logits - penalty
+
+            mean_batch_logits = torch.mean(logits.float(), dim = 0)
+            with torch.no_grad():
+                self.avg_logits.mul_(self.beta)
+                
+                self.avg_logits.add_(mean_batch_logits.detach(), alpha = 1.0 - self.beta)
+        else:
+            balanced_logits = logits
 
         top_k_logits, top_k_indices = torch.topk(
-            logits, k=self.top_k, dim=-1, largest=True, sorted=False
+            balanced_logits, k=self.top_k, dim=-1, largest=True, sorted=False
         )
         
-        router_probs = torch.full_like(logits, float("-inf"))
+        router_probs = torch.full_like(balanced_logits, float("-inf"))
         router_probs.scatter_(-1, top_k_indices, top_k_logits)
         router_probs = F.softmax(router_probs, dim=-1)
-
-        if self.training:
-            batch_routed_probs = torch.mean(router_probs.float(), dim = 0)
-            self.avg_probs.mul_(self.beta).add_(batch_routed_probs.detach(), alpha = (1.0 - self.beta))
         
         top_k_scores = torch.gather(router_probs, dim = -1, index = top_k_indices)
 
