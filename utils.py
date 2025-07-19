@@ -19,7 +19,7 @@ from torch.distributed.checkpoint.format_utils import dcp_to_torch_save, torch_s
 import torch.distributed.checkpoint as dcp
 from torch.distributed.tensor import DTensor
 import tqdm
-from gates import CustomNaiveGate_Balance_SMoE, MHMoEGate
+from gates import BaseGate
 import wandb
 from optimizers.signum import Signum
 
@@ -399,7 +399,7 @@ class Logger:
         # Log MoE-specific information if available
         moe_stats = []
         for name, m in model.named_modules():
-            if isinstance(m, CustomNaiveGate_Balance_SMoE) or isinstance(m, MHMoEGate):
+            if isinstance(m, BaseGate):
                 if hasattr(m, 'loss') and m.loss is not None:
                     moe_stats.append(m.loss.item())
         
