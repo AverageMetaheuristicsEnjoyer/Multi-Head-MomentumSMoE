@@ -105,6 +105,57 @@ class SMoE_Momentum(BaseGate):
             return top_k_indices, top_k_scores, logits
         return top_k_indices, top_k_scores
 
+class SMoE_Reg(BaseGate):
+    def __init__(self, d_model, num_expert, world_size,
+                 top_k=2, aux_blance=True, srome_alpha1 = 1.0, srome_alpha2 = 1.0, srome_beta = 0.9, **kwargs):
+        super().__init__(num_expert, world_size)
+        self.gate = nn.Linear(d_model, self.tot_expert, bias=False)
+        self.top_k = top_k
+        self.aux_blance = aux_blance
+        self.loss = None
+        self.register_buffer("avg_logits", torch.zeros(self.tot_expert))
+        self.probs = None
+        self.alpha1 = srome_alpha1
+        self.alpha2 = srome_alpha2
+        self.beta = srome_beta
+
+    def _calculate_load_balance_loss(self, router_probs, top_k_indices, mean_batch_logits):
+        with torch.no_grad():
+            one_hot_indices = F.one_hot(top_k_indices, self.tot_expert).float()
+            one_hot_indices = torch.sum(one_hot_indices, dim = 1)
+            f_i = one_hot_indices.mean(dim=0)
+
+        P_i = torch.mean(router_probs.float(), dim=0)
+
+        loss = (f_i * P_i).sum() * self.tot_expert
+        self.loss = loss + self.alpha1 * torch.linalg.vector_norm(self.avg_logits, ord = 2).pow(2) + self.alpha2 * torch.linalg.vector_norm(mean_batch_logits, ord = 2).pow(2)
+
+    def forward(self, inp, return_all_scores=False):
+        logits = self.gate(inp)
+
+        if self.training:
+            mean_batch_logits = torch.mean(logits.float(), dim = 0)
+            with torch.no_grad():
+                self.avg_logits.mul_(self.beta)
+                self.avg_logits.add_(mean_batch_logits.detach(), alpha = 1.0 - self.beta)
+
+        top_k_logits, top_k_indices = torch.topk(
+            logits, k=self.top_k, dim=-1, largest=True, sorted=False
+        )
+        
+        router_probs = torch.full_like(logits, float("-inf"))
+        router_probs.scatter_(-1, top_k_indices, top_k_logits)
+        router_probs = F.softmax(router_probs, dim=-1)
+
+        if self.training and self.aux_blance:
+            self._calculate_load_balance_loss(router_probs, top_k_indices, mean_batch_logits)
+        
+        top_k_scores = torch.gather(router_probs, dim = -1, index = top_k_indices)
+
+        if return_all_scores:
+            return top_k_indices, top_k_scores, logits
+        return top_k_indices, top_k_scores
+
 # class EF21Gate(BaseGate):
 #     def __init__(self, d_model, num_expert, world_size, top_k=2):
 #         super().__init__(num_expert, world_size)

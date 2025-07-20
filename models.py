@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from custom_transformer import FMoETransformerMLP
-from gates import CustomNaiveGate_Balance_SMoE, MHMoEGate, SMoE_Momentum
+from gates import *
 
 # Size notations:
 # B = batch_size, H = hidden_size, M = block_size, L = attn_span
@@ -676,6 +676,8 @@ class TransformerSeqLayer(nn.Module):
             gate = MHMoEGate
         elif gate_name == "smome":
             gate = SMoE_Momentum
+        elif gate_name == "srome":
+            gate = SMoE_Reg
         else:
             ValueError("Incorrect gate name")
         

@@ -221,6 +221,21 @@ PARAMS_CONFIG = {
             "default": 0.9,
             "dest": "smome_beta",
         },
+        "--srome-alpha1": {
+            "type": float,
+            "default": 0.01,
+            "dest": "srome_alpha1",
+        },
+        "--srome-alpha2": {
+            "type": float,
+            "default": 0.01,
+            "dest": "srome_alpha2",
+        },
+        "--srome-beta": {
+            "type": float,
+            "default": 0.9,
+            "dest": "srome_beta",
+        },
     },
     "optim_params": {
         "--lr": {
