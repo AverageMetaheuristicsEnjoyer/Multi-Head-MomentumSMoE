@@ -24,6 +24,7 @@ from utils import (
     save_checkpoint,
     create_exp_dir,
     Logger,
+    ExpertActivationTracker
 )
 
 
@@ -120,6 +121,14 @@ def launch(
 
     # create logger - only on master process
     if is_master:
+        plots_dir = os.path.join(trainer_params["output_dir"], "activation_plots")
+        activation_tracker = ExpertActivationTracker(
+            model_params=model_params,
+            world_size=world_size,
+            output_dir=plots_dir
+        )
+        activation_tracker.register_hook(model)
+        
         logger = Logger()
         fold_name = trainer_params["checkpoint_path"].split("/")[-1].split(".")[0]
         folder_path = "/".join(trainer_params["checkpoint_path"].split("/")[:-1])
@@ -235,6 +244,8 @@ def launch(
     for iter_no in range(iter_init, num_epochs):
         if is_master:
             logging(f"=================== EPOCHS {iter_no} ======================")
+            activation_tracker.reset()
+
         # time storing
         t_sta = time.time()
         loss_train, data_pos[0], hid_cache[0] = train_iteration(
@@ -300,6 +311,9 @@ def launch(
                     elapsed,
                 )
             logging(msg_result)
+
+            print(f"Generating expert activation plot for epoch {iter_no}...")
+            activation_tracker.plot_and_save(iter_no)
             
             # Log to wandb only from the master process
             if wandb_flag:

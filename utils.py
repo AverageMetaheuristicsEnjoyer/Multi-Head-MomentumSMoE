@@ -22,7 +22,93 @@ import tqdm
 from gates import BaseGate
 import wandb
 from optimizers.signum import Signum
+from collections import defaultdict
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
 
+class ExpertActivationTracker:
+    def __init__(self, model_params, world_size, output_dir):
+        self.model_params = model_params
+        self.world_size = world_size
+        self.output_dir = output_dir
+        self.activation_counts = defaultdict(list)
+
+        os.makedirs(self.output_dir, exist_ok = True)
+    
+    def _get_activation_hook(self, layer_name, total_experts):
+        def hook(module, input, output):
+            gate_top_k_idx = output[0]
+            valid_indices = gate_top_k_idx[gate_top_k_idx >= 0]
+
+            if valid_indices.numel() > 0:
+                counts = torch.bincount(valid_indices.flatten(), minlength=total_experts)
+                self.activation_counts[layer_name].append(counts.cpu())
+            
+        return hook
+
+    def register_hook(self, model):
+        print("Registering expert activation hooks...")
+        unwrapped_model = model.module if hasattr(model, "module") else model
+
+        num_experts = self.model_params["num_experts"]
+        total_experts = num_experts * self.world_size
+
+        for i, layer in enumerate(unwrapped_model.layers):
+            if hasattr(layer, "smoe") and layer.smoe is not None:
+                gate_module = layer.smoe.gate
+                layer_name = f"layer_{i}"
+                gate_module.register_forward_hook(
+                    self._get_activation_hook(layer_name, total_experts)
+                )
+                print(f"  - Hook registered for gate in {layer_name}")
+    
+    def reset(self):
+        self.activation_counts.clear()
+        print("Expert activation counts reset for new epoch")
+
+    def plot_and_save(self, epoch):
+        print(f"Processing expert activations for epoch {epoch}...")
+        num_layers = self.model_params['num_layers']
+        total_experts = self.model_params['num_experts'] * self.world_size
+        activation_matrix = np.zeros((num_layers, total_experts))
+
+        for i in range(num_layers):
+            layer_name = f"layer_{i}"
+            if layer_name in self.activation_counts:
+                
+                total_counts_for_layer = torch.stack(self.activation_counts[layer_name]).sum(dim=0)
+                total_activations_in_layer = total_counts_for_layer.sum()
+                
+                if total_activations_in_layer > 0:
+                    frequencies = total_counts_for_layer / total_activations_in_layer
+                    activation_matrix[i, :] = frequencies.numpy()
+
+        if np.sum(activation_matrix) == 0:
+            print("No expert activations were recorded. Skipping plot generation.")
+            return
+
+        plt.style.use('default')
+        fig, ax = plt.subplots(figsize=(12, 8))
+        
+        sns.heatmap(
+            activation_matrix,
+            annot=True,
+            fmt=".3f",
+            cmap="viridis",
+            linewidths=.5,
+            ax=ax,
+            annot_kws={"size": 8}
+        )
+        
+        ax.set_xlabel("Expert Index", fontsize=12)
+        ax.set_ylabel("Layer Index", fontsize=12)
+        ax.set_title(f"Expert Activation Frequency - Epoch {epoch}", fontsize=14, pad=20)
+        
+        output_filename = os.path.join(self.output_dir, f"expert_activations_epoch_{epoch}.png")
+        plt.savefig(output_filename, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        print(f"Expert activation plot saved to: {output_filename}")
 
 def logging(s, log_path, print_=True, log_=True):
     if print_:
