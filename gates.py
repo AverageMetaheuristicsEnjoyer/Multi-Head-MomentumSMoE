@@ -27,7 +27,7 @@ class BaseGate(nn.Module):
         return self.loss is not None
 
 class CustomNaiveGate_Balance_SMoE(BaseGate):
-    def __init__(self, d_model, num_expert, world_size, top_k=2, aux_blance=True):
+    def __init__(self, d_model, num_expert, world_size, top_k=2, aux_blance=True, **kwargs):
         super().__init__(num_expert, world_size)
         self.gate = nn.Linear(d_model, self.tot_expert, bias=False)
         self.top_k = top_k
@@ -83,21 +83,25 @@ class SMoE_Momentum(BaseGate):
             penalty = self.avg_logits.unsqueeze(0) * self.alpha
             balanced_logits = logits - penalty
 
-            mean_batch_logits = torch.mean(logits.float(), dim = 0)
+            router_probs_for_balance = F.softmax(logits.float(), dim = -1)
+            mean_batch_probs = torch.mean(router_probs_for_balance, dim = 0)
             with torch.no_grad():
                 self.avg_logits.mul_(self.beta)
                 
-                self.avg_logits.add_(mean_batch_logits.detach(), alpha = 1.0 - self.beta)
+                self.avg_logits.add_(mean_batch_probs.detach(), alpha = 1.0 - self.beta)
+            
+            _, top_k_indices = torch.topk(
+                balanced_logits, k=self.top_k, dim=-1, largest=True, sorted=False
+            )
         else:
-            balanced_logits = logits
-
-        top_k_logits, top_k_indices = torch.topk(
-            balanced_logits, k=self.top_k, dim=-1, largest=True, sorted=False
-        )
+            _, top_k_indices = torch.topk(
+                logits, k=self.top_k, dim=-1, largest=True, sorted=False
+            )
         
-        router_probs = torch.full_like(balanced_logits, float("-inf"))
-        router_probs.scatter_(-1, top_k_indices, top_k_logits)
-        router_probs = F.softmax(router_probs, dim=-1)
+        gating_logits = torch.full_like(logits, float("-inf"))
+        original_top_k_logits = torch.gather(logits, dim=-1, index=top_k_indices)
+        gating_logits.scatter_(-1, top_k_indices, original_top_k_logits)
+        router_probs = F.softmax(gating_logits, dim=-1)
         
         top_k_scores = torch.gather(router_probs, dim = -1, index = top_k_indices)
 
@@ -107,50 +111,56 @@ class SMoE_Momentum(BaseGate):
 
 class SMoE_Reg(BaseGate):
     def __init__(self, d_model, num_expert, world_size,
-                 top_k=2, aux_blance=True, srome_alpha1 = 1.0, srome_alpha2 = 1.0, srome_beta = 0.9, **kwargs):
+                 top_k=2, aux_blance=True,
+                 srome_alpha = 1.0, srome_lambda1 = 1.0,
+                 srome_lambda2 = 1.0, srome_beta = 0.9, **kwargs):
         super().__init__(num_expert, world_size)
         self.gate = nn.Linear(d_model, self.tot_expert, bias=False)
         self.top_k = top_k
         self.aux_blance = aux_blance
         self.loss = None
-        self.register_buffer("avg_logits", torch.zeros(self.tot_expert))
-        self.probs = None
-        self.alpha1 = srome_alpha1
-        self.alpha2 = srome_alpha2
+        self.alpha = srome_alpha
+        self.lambda1 = srome_lambda1
+        self.lambda2 = srome_lambda2
         self.beta = srome_beta
 
-    def _calculate_load_balance_loss(self, router_probs, top_k_indices, mean_batch_logits):
+        self.register_buffer("avg_probs", torch.zeros(self.tot_expert))
+
+    def _calculate_combined_loss(self, router_probs, top_k_scores, top_k_indices):
         with torch.no_grad():
             one_hot_indices = F.one_hot(top_k_indices, self.tot_expert).float()
-            one_hot_indices = torch.sum(one_hot_indices, dim = 1)
-            f_i = one_hot_indices.mean(dim=0)
+            f_i = torch.sum(one_hot_indices, dim=1).mean(dim=0)
 
         P_i = torch.mean(router_probs.float(), dim=0)
+        load_balance_loss = (f_i * P_i).sum() * self.tot_expert
 
-        loss = (f_i * P_i).sum() * self.tot_expert
-        self.loss = loss + self.alpha1 * torch.linalg.vector_norm(self.avg_logits, ord = 2).pow(2) + self.alpha2 * torch.linalg.vector_norm(mean_batch_logits, ord = 2).pow(2)
+        norm_pi = torch.linalg.vector_norm(router_probs, ord=2, dim=-1).pow(2)
+        norm_pi_tilde = torch.linalg.vector_norm(top_k_scores, ord=2, dim=-1).pow(2)
+
+        reg_loss = -self.lambda1 * torch.mean(norm_pi) + self.lambda2 * torch.mean(norm_pi_tilde)
+
+        self.loss = load_balance_loss + reg_loss
 
     def forward(self, inp, return_all_scores=False):
         logits = self.gate(inp)
 
-        if self.training:
-            mean_batch_logits = torch.mean(logits.float(), dim = 0)
-            with torch.no_grad():
-                self.avg_logits.mul_(self.beta)
-                self.avg_logits.add_(mean_batch_logits.detach(), alpha = 1.0 - self.beta)
+        penalty = self.avg_probs.unsqueeze(0) * self.alpha
+        balanced_logits = logits - penalty
 
-        top_k_logits, top_k_indices = torch.topk(
-            logits, k=self.top_k, dim=-1, largest=True, sorted=False
+        router_probs = F.softmax(logits.float(), dim=-1)
+
+        if self.training:
+            mean_batch_probs = torch.mean(router_probs, dim=0)
+            with torch.no_grad():
+                self.avg_probs.mul_(self.beta)
+                self.avg_probs.add_(mean_batch_probs.detach(), alpha=1.0 - self.beta)
+
+        top_k_scores, top_k_indices = torch.topk(
+            router_probs, k=self.top_k, dim=-1, largest=True, sorted=False
         )
-        
-        router_probs = torch.full_like(logits, float("-inf"))
-        router_probs.scatter_(-1, top_k_indices, top_k_logits)
-        router_probs = F.softmax(router_probs, dim=-1)
 
         if self.training and self.aux_blance:
-            self._calculate_load_balance_loss(router_probs, top_k_indices, mean_batch_logits)
-        
-        top_k_scores = torch.gather(router_probs, dim = -1, index = top_k_indices)
+            self._calculate_combined_loss(router_probs, top_k_scores, top_k_indices)
 
         if return_all_scores:
             return top_k_indices, top_k_scores, logits
