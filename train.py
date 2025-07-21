@@ -244,7 +244,6 @@ def launch(
     for iter_no in range(iter_init, num_epochs):
         if is_master:
             logging(f"=================== EPOCHS {iter_no} ======================")
-            activation_tracker.reset()
 
         # time storing
         t_sta = time.time()
@@ -262,6 +261,10 @@ def launch(
             trainer_params["batch_split"],
             optim_params["clip"],
         )
+
+        if is_master:
+            activation_tracker.reset()
+
         elapsed = 1000 * (time.time() - t_sta) / nb_batches_per_iter
         with torch.no_grad():
             loss_val, data_pos[1], hid_cache[1] = train_iteration(
