@@ -79,10 +79,10 @@ class SMoE_Momentum(BaseGate):
     def forward(self, inp, return_all_scores=False):
         logits = self.gate(inp)
 
+        penalty = self.avg_logits.unsqueeze(0) * self.alpha
+        balanced_logits = logits - penalty
+        
         if self.training:
-            penalty = self.avg_logits.unsqueeze(0) * self.alpha
-            balanced_logits = logits - penalty
-
             router_probs_for_balance = F.softmax(logits.float(), dim = -1)
             mean_batch_probs = torch.mean(router_probs_for_balance, dim = 0)
             with torch.no_grad():
@@ -90,13 +90,9 @@ class SMoE_Momentum(BaseGate):
                 
                 self.avg_logits.add_(mean_batch_probs.detach(), alpha = 1.0 - self.beta)
             
-            _, top_k_indices = torch.topk(
-                balanced_logits, k=self.top_k, dim=-1, largest=True, sorted=False
-            )
-        else:
-            _, top_k_indices = torch.topk(
-                logits, k=self.top_k, dim=-1, largest=True, sorted=False
-            )
+        _, top_k_indices = torch.topk(
+            balanced_logits, k=self.top_k, dim=-1, largest=True, sorted=False
+        )
         
         gating_logits = torch.full_like(logits, float("-inf"))
         original_top_k_logits = torch.gather(logits, dim=-1, index=top_k_indices)
