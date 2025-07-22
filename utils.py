@@ -88,6 +88,18 @@ class ExpertActivationTracker:
             print("No expert activations were recorded. Skipping plot generation.")
             return
 
+        layer_variances = []
+        for i in range(activation_matrix.shape[0]):
+            layer_frequencies = activation_matrix[i, :]
+            if np.sum(layer_frequencies) > 0:
+                variance = np.var(layer_frequencies)
+                layer_variances.append(variance)
+
+        mean_variance = -1
+        if layer_variances:
+            mean_variance = np.mean(layer_variances)
+            print(f"Mean Variance of Expert Frequencies across layers: {mean_variance:.8f}")
+
         plt.style.use('default')
         fig, ax = plt.subplots(figsize=(12, 8))
         
