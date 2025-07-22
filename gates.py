@@ -140,20 +140,27 @@ class SMoE_Reg(BaseGate):
     def forward(self, inp, return_all_scores=False):
         logits = self.gate(inp)
 
-        penalty = self.avg_probs.unsqueeze(0) * self.alpha
-        balanced_logits = logits - penalty
-
-        router_probs = F.softmax(logits.float(), dim=-1)
+        # penalty = self.avg_probs.unsqueeze(0) * self.alpha
+        # balanced_logits = logits - penalty
+        balanced_logits = logits
 
         if self.training:
-            mean_batch_probs = torch.mean(router_probs, dim=0)
+            router_probs_for_balance = F.softmax(logits.float(), dim = -1)
+            mean_batch_probs = torch.mean(router_probs_for_balance, dim = 0)
             with torch.no_grad():
                 self.avg_probs.mul_(self.beta)
                 self.avg_probs.add_(mean_batch_probs.detach(), alpha=1.0 - self.beta)
 
-        top_k_scores, top_k_indices = torch.topk(
-            router_probs, k=self.top_k, dim=-1, largest=True, sorted=False
+        _, top_k_indices = torch.topk(
+            balanced_logits, k=self.top_k, dim=-1, largest=True, sorted=False
         )
+
+        gating_logits = torch.full_like(logits, float("-inf"))
+        original_top_k_logits = torch.gather(logits, dim=-1, index=top_k_indices)
+        gating_logits.scatter_(-1, top_k_indices, original_top_k_logits)
+        router_probs = F.softmax(gating_logits, dim=-1)
+        
+        top_k_scores = torch.gather(router_probs, dim = -1, index = top_k_indices)
 
         if self.training and self.aux_blance:
             self._calculate_combined_loss(router_probs, top_k_scores, top_k_indices)
