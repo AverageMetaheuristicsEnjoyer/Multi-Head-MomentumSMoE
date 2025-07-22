@@ -140,9 +140,9 @@ class SMoE_Reg(BaseGate):
     def forward(self, inp, return_all_scores=False):
         logits = self.gate(inp)
 
-        # penalty = self.avg_probs.unsqueeze(0) * self.alpha
-        # balanced_logits = logits - penalty
-        balanced_logits = logits
+        penalty = self.avg_probs.unsqueeze(0) * self.alpha
+        balanced_logits = logits - penalty
+        # balanced_logits = logits
 
         if self.training:
             router_probs_for_balance = F.softmax(logits.float(), dim = -1)
