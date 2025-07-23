@@ -28,7 +28,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 class ExpertActivationTracker:
-    def __init__(self, model_params, world_size, output_dir):
+    def __init__(self, model_params, world_size, output_dir, annot = False):
         self.model_params = model_params
         self.world_size = world_size
         self.output_dir = output_dir
@@ -105,7 +105,7 @@ class ExpertActivationTracker:
         
         sns.heatmap(
             activation_matrix,
-            annot=True,
+            annot=annot,
             fmt=".3f",
             cmap="viridis",
             linewidths=.5,
