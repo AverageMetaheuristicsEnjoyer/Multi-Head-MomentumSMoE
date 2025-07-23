@@ -149,13 +149,15 @@ class OuterLayer(InnerGroupLayer):
         self.beta1 = beta1
         self.beta2 = beta2
         self.dropout = nn.Dropout(dropout)
+        
+        self.hidden_size = hidden_size
     
     def forward(self, inp, hist):
         original_shape = inp.shape
         reshaped_inp = inp.reshape(-1, self.hidden_size)
         mars_hist, momentum = hist
         
-        groups_out = super().forward(reshaped_inp, momentum)
+        groups_out, momentum = super().forward(reshaped_inp, momentum)
         moe_out = torch.sum(groups_out, dim=1)
         moe_out = self.dropout(moe_out)
         
