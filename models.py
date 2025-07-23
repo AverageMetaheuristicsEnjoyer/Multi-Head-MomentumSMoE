@@ -2,7 +2,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from custom_transformer import FMoETransformerMLP
+from custom_transformer import FMoETransformerMLP, GroupsFMoETransformerMLP
 from gates import *
 
 # Size notations:
@@ -113,6 +113,112 @@ class MultiHeadSeqAttention(nn.Module):
         out = self.proj_out(out)
         return out
 
+class InnerMomentumLayer(GroupsFMoETransformerMLP):
+    def __init__(
+        self,
+        hidden_size,
+        inner_hidden_size,
+        dropout,
+        gate,
+        num_experts,
+        moe_top_k,
+        gamma = 1.0,
+        mu = 0.7,
+        world_size = 1,
+        **kwargs,
+    ):
+        activation = nn.Sequential(nn.ReLU(), nn.Dropout(dropout))
+        super().__init__(   
+            hidden_size = hidden_size,
+            inner_hidden_size = inner_hidden_size,
+            activation = activation,
+            gate = gate,
+            num_experts = num_experts,
+            moe_top_k = moe_top_k,
+            world_size = world_size,
+        )
+        self.gamma = gamma
+        self.mu = mu
+
+    def forward(self, inp, momentum=None):
+        # expert_outputs shape: (tokens, num_groups, top_k_per_group, dim)
+        # gate_scores shape:    (tokens, num_groups, top_k_per_group, 1)
+        # momentum shape:       (tokens, dim)
+
+        expert_outputs, gate_scores = super().forward(inp)
+
+        # 1. Perform weighted sum within each group
+        # Result shape: (tokens, num_groups, dim)
+        weighted_group_outputs = torch.sum(expert_outputs * gate_scores, dim=2)
+
+        # momentum = -weighted_group_outputs + self.mu * momentum
+        # group_moe_out = self.gamma * momentum
+        # moe_out = torch.sum(weighted_group_outputs, dim=1)
+
+        output = weighted_group_outputs
+        return output, momentum
+
+class OuterLayer(InnerMomentumLayer):
+    def __init__(
+        self,
+        hidden_size,
+        inner_hidden_size,
+        dropout,
+        gate,
+        num_experts,
+        moe_top_k,
+        gamma1,
+        gamma2,
+        mu,
+        world_size,
+        beta1,
+        beta2,
+        **kwargs
+    ):
+        # super().__init__()
+        super().__init__(
+            hidden_size = hidden_size,
+            inner_hidden_size = inner_hidden_size,
+            dropout = dropout,
+            gate = gate,
+            num_experts = num_experts,
+            moe_top_k = moe_top_k,
+            gamma = gamma1,
+            mu = mu,
+            world_size = world_size,
+            **kwargs
+        )
+        self.gamma1 = gamma1
+        self.gamma2 = gamma2
+        self.mu = mu
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, inp, hist):
+        mars_hist, momentum = hist
+        groups_out = super().forward(inp, momentum)
+        moe_out = torch.sum(groups_out, dim=1)
+        moe_out = self.dropout(moe_out)
+        
+        # m, v, _, moe_out_prev = hist
+
+        # outps_diff = -moe_out - (-moe_out_prev)
+
+        # c = -moe_out + self.gamma2 * (self.beta1 / (1 - self.beta1)) * outps_diff
+        # c_norm = torch.linalg.matrix_norm(c, dim = (-2, -1), ord = "fro")
+        # batch_idx = c_norm > 1
+        # scaling_facs = torch.ones_like(c_norm)
+        # scaling_facs[batch_idx] = c_norm[batch_idx]
+        # c_t = c / scaling_facs.view(-1, 1, 1)
+        
+        # m_t = self.beta1 * m + (1 - self.beta1) * c_t
+        # v_t = self.beta2 * v + (1 - self.beta2) * c_t**2
+
+        # out = self.gamma1 * m_t / (torch.sqrt(v_t + 1e-8))
+
+        return out, (mars_hist, momentum)
+
 class MomentumLayer(FMoETransformerMLP):
     def __init__(
         self,
@@ -147,8 +253,6 @@ class MomentumLayer(FMoETransformerMLP):
         self.gamma = gamma
         self.mu = mu
         self.dropout = nn.Dropout(dropout)
-        # self.layer_norm = nn.LayerNorm(hidden_size)
-
 
     def forward(self, inp, momentum):
         moe_out = super().forward(inp)
@@ -157,238 +261,6 @@ class MomentumLayer(FMoETransformerMLP):
         momentum = -moe_out + self.mu * momentum
         output = self.gamma * momentum
         return output, momentum
-
-class AdamLayer(FMoETransformerMLP):
-    def __init__(
-        self,
-        hidden_size,
-        inner_hidden_size,
-        dropout,
-        gate,
-        num_experts,
-        moe_top_k,
-        mhmoe_num_heads,
-        mhmoe_beta,
-        gamma1,
-        gamma2,
-        mu,
-        use_xmoe,
-        xmoe_dim,
-        world_size,
-        beta1,
-        beta2,
-        layerth,
-    ):
-        activation = nn.Sequential(nn.ReLU(), nn.Dropout(dropout))
-        super().__init__(
-            hidden_size = hidden_size,
-            inner_hidden_size = inner_hidden_size,
-            activation = activation,
-            gate = gate,
-            num_experts = num_experts,
-            moe_top_k = moe_top_k,
-            mhmoe_num_heads = mhmoe_num_heads,
-            mhmoe_beta = mhmoe_beta,
-            use_xmoe = use_xmoe,
-            xmoe_dim = xmoe_dim,
-            world_size = world_size,
-        )
-        self.gamma1 = gamma1
-        self.gamma2 = gamma2
-        self.mu = mu
-        self.beta1 = beta1
-        self.beta2 = beta2
-        self.layerth = layerth
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, inp, momentum):
-        moe_out = super().forward(inp)
-        moe_out = self.dropout(moe_out)
-        
-        if self.layerth == 0:
-            p = momentum[0]
-            v = momentum[1]
-            momentum = self.mu * momentum[2] + self.gamma2 * moe_out
-
-            p = self.beta1 * p + (1 - self.beta1) * moe_out
-            v = self.beta2 * v + (1 - self.beta2) * (moe_out ** 2)
-            adam = (self.gamma1 / torch.sqrt(v + 1e-8)) * p + inp
-            output = inp - adam  
-        else:
-            p = momentum[0]
-            v = momentum[1]
-            momentum = self.mu * momentum[2] + self.gamma2 * moe_out
-            # output = self.layer_norm(inp - momentum)
-            output = inp - momentum
-        
-        return output, (p, v, momentum)
-
-def linear_warmup_scheduler(step, alpha_end, alpha_start=0, warmup=1):
-    if step < warmup:
-        a = step / float(warmup)
-        return (1.0-a) * alpha_start + a * alpha_end
-    return alpha_end
-
-def linear_hl_warmup_scheduler(step, beta_end, beta_start=0, warmup=1):
-
-    def f(beta, eps=1e-8):
-        return math.log(0.5)/math.log(beta+eps)-1
-
-    def f_inv(t):
-        return math.pow(0.5, 1/(t+1))
-
-    if step < warmup:
-        a = step / float(warmup)
-        return f_inv((1.0-a) * f(beta_start) + a * f(beta_end))
-    return beta_end
-
-class AdEMAMixLayer(FMoETransformerMLP):
-    def __init__(
-        self,
-        hidden_size,
-        inner_hidden_size,
-        dropout,
-        gate,
-        num_experts,
-        moe_top_k,
-        mhmoe_num_heads,
-        mhmoe_beta,
-        gamma2,
-        mu,
-        alpha,
-        beta1,
-        beta2,
-        beta3,
-        t_warmup,
-        alpha_warmup,
-        beta3_warmup,
-        ademamix_all_layers,
-        use_xmoe,
-        xmoe_dim,
-        world_size,
-        weight_decay,
-        layerth,
-    ):
-        activation = nn.Sequential(nn.ReLU(), nn.Dropout(dropout))
-        super().__init__(
-            hidden_size = hidden_size,
-            inner_hidden_size = inner_hidden_size,
-            activation = activation,
-            gate = gate,
-            num_experts = num_experts,
-            moe_top_k = moe_top_k,
-            mhmoe_num_heads = mhmoe_num_heads,
-            mhmoe_beta = mhmoe_beta,
-            use_xmoe = use_xmoe,
-            xmoe_dim = xmoe_dim,
-            world_size = world_size,
-        )
-        self.mu = mu
-        self.gamma2 = gamma2
-        self.alpha = alpha
-        self.beta1 = beta1
-        self.beta2 = beta2
-        self.beta3 = beta3
-        # self.t_warmup = t_warmup
-        self.alpha_warmup = alpha_warmup
-        self.beta3_warmup = beta3_warmup
-        self.ademamix_all_layers = ademamix_all_layers
-        self.weight_decay = weight_decay
-        self.layerth = layerth
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, inp, momentum):
-        moe_out = super().forward(inp)
-        moe_out = self.dropout(moe_out)
-
-        if self.layerth == 0 or self.ademamix_all_layers:
-            m1, v, m2, step_count, _ = momentum
-            step_count += 1
-            step = step_count.item()
-            bias_correction1 = 1.0 - self.beta1 ** step
-            bias_correction2 = 1.0 - self.beta2 ** step
-
-            if self.alpha_warmup:
-                alpha_t = linear_warmup_scheduler(step, alpha_end = self.alpha, alpha_start = 0, warmup = self.alpha_warmup)
-            else:
-                alpha_t = self.alpha
-            
-            if self.beta3_warmup:
-                beta3_t = linear_hl_warmup_scheduler(step, self.beta3, beta_start = self.beta1, warmup = self.beta3_warmup)
-            else:
-                beta3_t = self.beta3
-
-            m1_new = self.beta1 * m1 + (1 - self.beta1) * moe_out
-            v_new = self.beta2 * v + (1 - self.beta2) * (moe_out ** 2)
-            m2_new = beta3_t * m2 + (1 - beta3_t) * moe_out
-            momentum = self.mu * momentum[4] + self.gamma2 * moe_out
-            
-            denom = torch.sqrt(v_new / bias_correction2 + 1e-8)
-            update = (m1_new / bias_correction1 + alpha_t * m2_new) / denom
-            
-            if self.weight_decay > 0:
-                update = update + self.weight_decay * inp
-                
-            output = inp - update
-            
-            return output, (m1_new, v_new, m2_new, step_count, momentum)
-        else:
-            m1, v, m2, step_count, _ = momentum
-            momentum = self.mu * momentum[4] + self.gamma2 * moe_out
-            
-            output = inp - momentum
-            return output, (m1, v, m2, step_count, momentum)
-
-class SignumLayer(FMoETransformerMLP):
-    def __init__(
-        self,
-        hidden_size,
-        inner_hidden_size,
-        dropout,
-        gate,
-        num_experts,
-        moe_top_k,
-        mhmoe_num_heads,
-        mhmoe_beta,
-        rand_zero,
-        use_xmoe,
-        xmoe_dim,
-        world_size,
-        beta1,
-        layerth,
-    ):
-        activation = nn.Sequential(nn.ReLU(), nn.Dropout(dropout))
-        super().__init__(
-            hidden_size = hidden_size,
-            inner_hidden_size = inner_hidden_size,
-            activation = activation,
-            gate = gate,
-            num_experts = num_experts,
-            moe_top_k = moe_top_k,
-            mhmoe_num_heads = mhmoe_num_heads,
-            mhmoe_beta = mhmoe_beta,
-            use_xmoe = use_xmoe,
-            xmoe_dim = xmoe_dim,
-            world_size = world_size,
-        )
-        self.beta1 = beta1
-        self.rand_zero = rand_zero
-        self.layerth = layerth
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, inp, momentum):
-        moe_out = super().forward(inp)
-        moe_out = self.dropout(moe_out)
-        
-        v = momentum
-        moe_out = torch.sign(moe_out)
-        if self.rand_zero:
-            is_zero = (moe_out == 0)
-            moe_out[is_zero] = 2 * torch.random.randint(0, 2, size = torch.sum(is_zero)) - 1
-        signum = self.beta1 * v + (1 - self.beta1) * moe_out
-        output = inp - signum
-        
-        return output, signum
 
 class MarsLayer(FMoETransformerMLP):
     def __init__(
@@ -456,68 +328,6 @@ class MarsLayer(FMoETransformerMLP):
         out = self.gamma1 * m_t / (torch.sqrt(v_t + 1e-8))
 
         return out, (m_t, v_t, _, moe_out.detach())
-    
-class MarsLionLayer(FMoETransformerMLP):
-    def __init__(
-        self,
-        hidden_size,
-        inner_hidden_size,
-        dropout,
-        gate,
-        num_experts,
-        moe_top_k,
-        mhmoe_num_heads,
-        mhmoe_beta,
-        gamma1,
-        gamma2,
-        mu,
-        use_xmoe,
-        xmoe_dim,
-        world_size,
-        beta1,
-        beta2,
-        layerth,
-    ):
-        activation = nn.Sequential(nn.ReLU(), nn.Dropout(dropout))
-        super().__init__(
-            hidden_size = hidden_size,
-            inner_hidden_size = inner_hidden_size,
-            activation = activation,
-            gate = gate,
-            num_experts = num_experts,
-            moe_top_k = moe_top_k,
-            mhmoe_num_heads = mhmoe_num_heads,
-            mhmoe_beta = mhmoe_beta,
-            use_xmoe = use_xmoe,
-            xmoe_dim = xmoe_dim,
-            world_size = world_size,
-        )
-        self.gamma1 = gamma1
-        self.gamma2 = gamma2
-        self.mu = mu
-        self.beta1 = beta1
-        self.beta2 = beta2
-        self.layerth = layerth
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, inp, hist):
-        moe_out = super().forward(inp)
-        moe_out = self.dropout(moe_out)
-        
-        m, v, step_count, moe_out_prev = hist
-
-        c = moe_out + self.gamma2 * (self.beta1 / (1 - self.beta1)) * (moe_out - moe_out_prev)
-        c_norm = torch.linalg.matrix_norm(c, dim = (-2, -1), ord = "fro")
-        batch_idx = c_norm > 1
-        scaling_facs = torch.ones_like(c_norm)
-        scaling_facs[batch_idx] = c_norm[batch_idx]
-        c_t = c / scaling_facs.view(-1, 1, 1)
-        
-        m_t = self.beta1 * m + (1 - self.beta1) * c_t
-
-        out = inp - self.gamma1 * torch.sign(m_t)
-
-        return out, (m_t, v, step_count, moe_out)
 
 class OptimistAdamLayer(FMoETransformerMLP):
     def __init__(
@@ -678,6 +488,8 @@ class TransformerSeqLayer(nn.Module):
             gate = SMoE_Momentum
         elif gate_name == "srome":
             gate = SMoE_Reg
+        elif gate_name == "groups":
+            gate = GroupsGate
         else:
             ValueError("Incorrect gate name")
         
@@ -693,7 +505,7 @@ class TransformerSeqLayer(nn.Module):
             else None
         )
         
-        self.use_smoe = g in ["m", "a", "e", "r", "l", "o", "v"]
+        self.use_smoe = g in ["m", "a", "e", "r", "l", "o", "v", "p"]
         self.smoe = (
             MomentumLayer(
                 hidden_size = hidden_size,
@@ -711,72 +523,6 @@ class TransformerSeqLayer(nn.Module):
                 world_size = world_size,
             )
             if g == "m"
-            else
-            AdamLayer(
-                hidden_size = hidden_size,
-                inner_hidden_size = inner_hidden_size,
-                dropout = dropout,
-                gate = gate,
-                num_experts = num_experts,
-                moe_top_k = moe_top_k,
-                mhmoe_num_heads = mhmoe_num_heads,
-                mhmoe_beta = mhmoe_beta,
-                gamma1 = gamma1,
-                gamma2 = gamma2,
-                mu = mu,
-                use_xmoe = use_xmoe,
-                xmoe_dim = xmoe_dim,
-                world_size = world_size,
-                beta1 = beta1,
-                beta2 = beta2,
-                layerth = layerth,
-            )
-            if g == "a"
-            else
-            AdEMAMixLayer(
-                hidden_size = hidden_size,
-                inner_hidden_size = inner_hidden_size,
-                dropout = dropout,
-                gate = gate,
-                num_experts = num_experts,
-                moe_top_k = moe_top_k,
-                mhmoe_num_heads = mhmoe_num_heads,
-                mhmoe_beta = mhmoe_beta,
-                gamma2 = gamma2,
-                mu = mu,
-                alpha = alpha,
-                beta1 = beta1,
-                beta2 = beta2,
-                beta3 = beta3,
-                t_warmup = t_warmup,
-                alpha_warmup = alpha_warmup,
-                beta3_warmup = beta3_warmup,
-                ademamix_all_layers = ademamix_all_layers,
-                weight_decay = weight_decay,
-                use_xmoe = use_xmoe,
-                xmoe_dim = xmoe_dim,
-                world_size = world_size,
-                layerth = layerth,
-            )
-            if g == "e"
-            else
-            SignumLayer(
-                hidden_size = hidden_size,
-                inner_hidden_size = inner_hidden_size,
-                dropout = dropout,
-                gate = gate,
-                num_experts = num_experts,
-                moe_top_k = moe_top_k,
-                mhmoe_num_heads = mhmoe_num_heads,
-                mhmoe_beta = mhmoe_beta,
-                use_xmoe = use_xmoe,
-                xmoe_dim = xmoe_dim,
-                world_size = world_size,
-                beta1 = beta1,
-                rand_zero = rand_zero,
-                layerth = layerth,
-            )
-            if g == "u"
             else
             MarsLayer(
                 hidden_size = hidden_size,
@@ -799,27 +545,6 @@ class TransformerSeqLayer(nn.Module):
                 **kwargs
             )
             if g == "r"
-            else
-            MarsLionLayer(
-                hidden_size = hidden_size,
-                inner_hidden_size = inner_hidden_size,
-                dropout = dropout,
-                gate = gate,
-                num_experts = num_experts,
-                moe_top_k = moe_top_k,
-                mhmoe_num_heads = mhmoe_num_heads,
-                mhmoe_beta = mhmoe_beta,
-                gamma1 = gamma1,
-                gamma2 = gamma2,
-                mu = mu,
-                use_xmoe = use_xmoe,
-                xmoe_dim = xmoe_dim,
-                world_size = world_size,
-                beta1 = beta1,
-                beta2 = beta2,
-                layerth = layerth,
-            )
-            if g == "l"
             else
             OptimistAdamLayer(
                 hidden_size = hidden_size,
@@ -862,6 +587,23 @@ class TransformerSeqLayer(nn.Module):
                 layerth = layerth,
             )
             if g == "v"
+            else
+            OuterLayer(
+                hidden_size = hidden_size,
+                inner_hidden_size = inner_hidden_size,
+                dropout = dropout,
+                gate = gate,
+                num_experts = num_experts,
+                moe_top_k = moe_top_k,
+                gamma1 = gamma1,
+                gamma2 = gamma2,
+                mu = mu,
+                world_size = world_size,
+                beta1 = beta1,
+                beta2 = beta2,
+                **kwargs
+            )
+            if g == "p"
             else None
         )
 
@@ -959,12 +701,26 @@ class TransformerSeq(nn.Module):
             )
             for i in range(num_layers)
         )
+        self.world_size = world_size
     
     def forward(self, x, h_cache):
         block_size = x.size(1) # B x M
         h = self.inp_embed(x) # B x M x H
         h_cache_next = []
-        if "e" in self.arch:
+        if "p" in self.arch:
+             m_zr = torch.zeros_like(h)
+             m_zr = m_zr.unsqueeze(-1)
+             momentum = (
+                (
+                torch.zeros_like(h),
+                torch.zeros_like(h),
+                torch.zeros_like(h),
+                ),
+                (
+                m_zr
+                )
+            )
+        elif "e" in self.arch:
             momentum = (
                 torch.zeros_like(h),
                 torch.zeros_like(h),

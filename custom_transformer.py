@@ -1,7 +1,7 @@
 import math
 import torch
 import torch.nn as nn
-from custom_layers import FMoE
+from custom_layers import FMoE, GroupsFMoE
 from custom_layers import FMoELinear
 
 class _Expert(nn.Module):
@@ -105,3 +105,46 @@ class FMoETransformerMLP(FMoE):
             out = super().forward(reshaped_inp)
         out = out.reshape(original_shape)
         return out
+
+class GroupsFMoETransformerMLP(GroupsFMoE):
+    def __init__(
+        self,
+        hidden_size,
+        inner_hidden_size,
+        activation,
+        gate,
+        num_experts,
+        moe_top_k,
+        world_size,
+        expert_dp_comm = "none",
+        expert_rank = 0,
+        **kwargs
+    ):
+        super().__init__(
+            num_expert = num_experts,
+            d_model = hidden_size,
+            moe_top_k = moe_top_k,
+            gate = gate,
+            world_size=world_size,
+            **kwargs
+        )
+        self.hidden_size = hidden_size
+        self.experts = _Expert(
+            hidden_size = hidden_size,
+            inner_hidden_size = inner_hidden_size,
+            activation = activation,
+            num_experts = num_experts,
+            rank = expert_rank,
+        )
+        
+        self.mark_parallel_comm(expert_dp_comm)
+    
+    def forward(self, inp): 
+        original_shape = inp.shape
+        reshaped_inp = inp.reshape(-1, self.hidden_size)
+        
+        moe_outp, gate_score = super().forward(reshaped_inp)
+        # TODO: I should probably somehow reshape it
+        # before returning similar to FMoETransformerMLP
+        # out = out.reshape(original_shape)
+        return moe_outp, gate_score

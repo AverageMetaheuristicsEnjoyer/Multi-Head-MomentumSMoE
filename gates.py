@@ -169,6 +169,52 @@ class SMoE_Reg(BaseGate):
             return top_k_indices, top_k_scores, logits
         return top_k_indices, top_k_scores
 
+class GroupsGate(BaseGate):
+    def __init__(self, d_model, num_expert, world_size, top_k = 1, aux_blance=True, **kwargs):
+        super().__init__(num_expert, world_size)
+        self.gate = nn.Linear(d_model, self.tot_expert, bias=False)
+        self.top_k = top_k
+        self.aux_blance = aux_blance
+        self.num_groups = world_size
+        self.experts_per_group = num_expert
+    
+    def _calculate_load_balance_loss(self, router_probs, top_k_indices):
+        with torch.no_grad():
+            one_hot_indices = F.one_hot(top_k_indices, self.tot_expert).float()
+            one_hot_indices = torch.sum(one_hot_indices, dim = 1)
+            f_i = one_hot_indices.mean(dim=0)
+
+        P_i = torch.mean(router_probs.float(), dim=0)
+
+        loss = (f_i * P_i).sum() * self.tot_expert
+        self.loss = loss
+
+    def forward(self, inp, return_all_scores=False):
+        batch_size = inp.shape[0]
+
+        logits = self.gate(inp)
+        global_probs = F.softmax(logits, dim=-1)
+
+        grouped_probs = global_probs.view(batch_size, self.num_groups, self.experts_per_group)
+
+        top_k_probs_per_group, top_k_indices_per_group = torch.topk(
+            grouped_probs, k=self.top_k, dim=-1
+        )
+
+        final_scores = top_k_probs_per_group.view(batch_size, -1)
+        group_offset = torch.arange(
+            0, self.tot_expert, self.experts_per_group, device=inp.device
+        ).unsqueeze(0).unsqueeze(-1)
+        global_top_k_indices = top_k_indices_per_group + group_offset
+        
+        final_indices = global_top_k_indices.view(batch_size, -1)
+        if self.training and self.aux_blance:
+            self._calculate_load_balance_loss(global_probs, final_indices)
+        
+        if return_all_scores:
+            return final_indices, final_scores, logits
+        return final_indices, final_scores
+
 # class EF21Gate(BaseGate):
 #     def __init__(self, d_model, num_expert, world_size, top_k=2):
 #         super().__init__(num_expert, world_size)
