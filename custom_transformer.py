@@ -106,20 +106,23 @@ class FMoETransformerMLP(FMoE):
         out = out.reshape(original_shape)
         return out
 
-class GroupsFMoETransformerMLP(GroupsFMoE):
+class InnerGroupLayer(GroupsFMoE):
     def __init__(
         self,
         hidden_size,
         inner_hidden_size,
-        activation,
+        dropout,
         gate,
         num_experts,
         moe_top_k,
+        gamma,
+        mu,
         world_size,
         expert_dp_comm = "none",
         expert_rank = 0,
-        **kwargs
+        **kwargs,
     ):
+        activation = nn.Sequential(nn.ReLU(), nn.Dropout(dropout))
         super().__init__(
             num_expert = num_experts,
             d_model = hidden_size,
@@ -128,7 +131,7 @@ class GroupsFMoETransformerMLP(GroupsFMoE):
             world_size=world_size,
             **kwargs
         )
-        self.hidden_size = hidden_size
+
         self.experts = _Expert(
             hidden_size = hidden_size,
             inner_hidden_size = inner_hidden_size,
@@ -136,15 +139,19 @@ class GroupsFMoETransformerMLP(GroupsFMoE):
             num_experts = num_experts,
             rank = expert_rank,
         )
-        
-        self.mark_parallel_comm(expert_dp_comm)
-    
-    def forward(self, inp): 
-        original_shape = inp.shape
-        reshaped_inp = inp.reshape(-1, self.hidden_size)
-        
-        moe_outp, gate_score = super().forward(reshaped_inp)
-        # TODO: I should probably somehow reshape it
-        # before returning similar to FMoETransformerMLP
-        # out = out.reshape(original_shape)
-        return moe_outp, gate_score
+        self.gamma = gamma
+        self.mu = mu
+
+    def forward(self, inp, momentum=None):
+        expert_outputs, gate_scores = super().forward(inp)
+
+        # 1. Perform weighted sum within each group
+        # Result shape: (tokens, num_groups, dim)
+        weighted_group_outputs = torch.sum(expert_outputs * gate_scores, dim=2)
+
+        # momentum = -weighted_group_outputs + self.mu * momentum
+        # group_moe_out = self.gamma * momentum
+        # moe_out = torch.sum(weighted_group_outputs, dim=1)
+
+        output = weighted_group_outputs
+        return output, momentum

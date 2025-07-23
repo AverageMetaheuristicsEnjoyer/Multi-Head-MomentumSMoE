@@ -2,7 +2,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from custom_transformer import FMoETransformerMLP, GroupsFMoETransformerMLP
+from custom_transformer import FMoETransformerMLP, InnerGroupLayer
 from gates import *
 
 # Size notations:
@@ -113,52 +113,7 @@ class MultiHeadSeqAttention(nn.Module):
         out = self.proj_out(out)
         return out
 
-class InnerMomentumLayer(GroupsFMoETransformerMLP):
-    def __init__(
-        self,
-        hidden_size,
-        inner_hidden_size,
-        dropout,
-        gate,
-        num_experts,
-        moe_top_k,
-        gamma = 1.0,
-        mu = 0.7,
-        world_size = 1,
-        **kwargs,
-    ):
-        activation = nn.Sequential(nn.ReLU(), nn.Dropout(dropout))
-        super().__init__(   
-            hidden_size = hidden_size,
-            inner_hidden_size = inner_hidden_size,
-            activation = activation,
-            gate = gate,
-            num_experts = num_experts,
-            moe_top_k = moe_top_k,
-            world_size = world_size,
-        )
-        self.gamma = gamma
-        self.mu = mu
-
-    def forward(self, inp, momentum=None):
-        # expert_outputs shape: (tokens, num_groups, top_k_per_group, dim)
-        # gate_scores shape:    (tokens, num_groups, top_k_per_group, 1)
-        # momentum shape:       (tokens, dim)
-
-        expert_outputs, gate_scores = super().forward(inp)
-
-        # 1. Perform weighted sum within each group
-        # Result shape: (tokens, num_groups, dim)
-        weighted_group_outputs = torch.sum(expert_outputs * gate_scores, dim=2)
-
-        # momentum = -weighted_group_outputs + self.mu * momentum
-        # group_moe_out = self.gamma * momentum
-        # moe_out = torch.sum(weighted_group_outputs, dim=1)
-
-        output = weighted_group_outputs
-        return output, momentum
-
-class OuterLayer(InnerMomentumLayer):
+class OuterLayer(InnerGroupLayer):
     def __init__(
         self,
         hidden_size,
@@ -196,8 +151,11 @@ class OuterLayer(InnerMomentumLayer):
         self.dropout = nn.Dropout(dropout)
     
     def forward(self, inp, hist):
+        original_shape = inp.shape
+        reshaped_inp = inp.reshape(-1, self.hidden_size)
         mars_hist, momentum = hist
-        groups_out = super().forward(inp, momentum)
+        
+        groups_out = super().forward(reshaped_inp, momentum)
         moe_out = torch.sum(groups_out, dim=1)
         moe_out = self.dropout(moe_out)
         
@@ -216,7 +174,8 @@ class OuterLayer(InnerMomentumLayer):
         # v_t = self.beta2 * v + (1 - self.beta2) * c_t**2
 
         # out = self.gamma1 * m_t / (torch.sqrt(v_t + 1e-8))
-
+        out = moe_out
+        out = out.reshape(original_shape)
         return out, (mars_hist, momentum)
 
 class MomentumLayer(FMoETransformerMLP):
