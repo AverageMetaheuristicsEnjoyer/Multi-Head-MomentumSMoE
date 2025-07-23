@@ -22,7 +22,7 @@ def _train_step(model, load_balance, X, Y, h_cache, eval_only, loss_div=1):
             for name, m in model.named_modules():
                 if isinstance(m, BaseGate):
                     if hasattr(m, 'loss') and m.loss is not None:
-                        balance_loss += m.loss
+                        balance_loss += m.get_loss(clear = True)
             loss += load_balance * balance_loss
             
         (loss / loss_div).backward()
