@@ -33,7 +33,7 @@ class ExpertActivationTracker:
         self.world_size = world_size
         self.output_dir = output_dir
         self.activation_counts = defaultdict(list)
-
+        self.annot = annot
         os.makedirs(self.output_dir, exist_ok = True)
     
     def _get_activation_hook(self, layer_name, total_experts):
@@ -105,7 +105,7 @@ class ExpertActivationTracker:
         
         sns.heatmap(
             activation_matrix,
-            annot=annot,
+            annot=self.annot,
             fmt=".3f",
             cmap="viridis",
             linewidths=.5,
