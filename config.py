@@ -241,6 +241,16 @@ PARAMS_CONFIG = {
             "default": 0.9,
             "dest": "srome_beta",
         },
+        "--use-penalty": {
+            "action": "store_true",
+            "default": False,
+            "dest": "use_penalty",
+        },
+        "--use-pis": {
+            "action": "store_true",
+            "default": False,
+            "dest": "use_pis",
+        },
     },
     "optim_params": {
         "--lr": {
