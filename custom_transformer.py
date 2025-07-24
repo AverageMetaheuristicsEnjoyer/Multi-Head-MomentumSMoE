@@ -144,14 +144,9 @@ class InnerGroupLayer(GroupsFMoE):
 
     def forward(self, inp, momentum=None):
         expert_outputs, gate_scores = super().forward(inp)
-
-        # 1. Perform weighted sum within each group
-        # Result shape: (tokens, num_groups, dim)
         weighted_group_outputs = torch.sum(expert_outputs * gate_scores, dim=2)
 
-        # momentum = -weighted_group_outputs + self.mu * momentum
-        # group_moe_out = self.gamma * momentum
-        # moe_out = torch.sum(weighted_group_outputs, dim=1)
+        momentum = -weighted_group_outputs + self.mu * momentum
+        group_moe_out = self.gamma * momentum
 
-        output = weighted_group_outputs
-        return output, momentum
+        return group_moe_out, momentum

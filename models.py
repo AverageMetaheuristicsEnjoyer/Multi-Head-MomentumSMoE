@@ -130,7 +130,6 @@ class OuterLayer(InnerGroupLayer):
         beta2,
         **kwargs
     ):
-        # super().__init__()
         super().__init__(
             hidden_size = hidden_size,
             inner_hidden_size = inner_hidden_size,
@@ -161,22 +160,26 @@ class OuterLayer(InnerGroupLayer):
         moe_out = torch.sum(groups_out, dim=1)
         moe_out = self.dropout(moe_out)
         
-        # m, v, _, moe_out_prev = hist
+        m, v, moe_out_prev = mars_hist
+        moe_out_prev = moe_out_prev.reshape(-1, self.hidden_size)
 
-        # outps_diff = -moe_out - (-moe_out_prev)
+        outps_diff = -moe_out - (-moe_out_prev)
 
-        # c = -moe_out + self.gamma2 * (self.beta1 / (1 - self.beta1)) * outps_diff
-        # c_norm = torch.linalg.matrix_norm(c, dim = (-2, -1), ord = "fro")
-        # batch_idx = c_norm > 1
-        # scaling_facs = torch.ones_like(c_norm)
-        # scaling_facs[batch_idx] = c_norm[batch_idx]
-        # c_t = c / scaling_facs.view(-1, 1, 1)
+        c = -moe_out + self.gamma2 * (self.beta1 / (1 - self.beta1)) * outps_diff
+        c = c.reshape(original_shape)
+        c_norm = torch.linalg.matrix_norm(c, dim = (-2, -1), ord = "fro")
+        batch_idx = c_norm > 1
+        scaling_facs = torch.ones_like(c_norm)
+        scaling_facs[batch_idx] = c_norm[batch_idx]
+        c_t = c / scaling_facs.view(-1, 1, 1)
+        c_t.reshape(-1, self.hidden_size)
         
-        # m_t = self.beta1 * m + (1 - self.beta1) * c_t
-        # v_t = self.beta2 * v + (1 - self.beta2) * c_t**2
+        m_t = self.beta1 * m + (1 - self.beta1) * c_t
+        v_t = self.beta2 * v + (1 - self.beta2) * c_t**2
 
-        # out = self.gamma1 * m_t / (torch.sqrt(v_t + 1e-8))
-        out = moe_out
+        out = self.gamma1 * m_t / (torch.sqrt(v_t + 1e-8))
+        mars_hist = (m_t, v_t, moe_out.detach().reshape(original_shape))
+        
         out = out.reshape(original_shape)
         return out, (mars_hist, momentum)
 
@@ -669,18 +672,18 @@ class TransformerSeq(nn.Module):
         h = self.inp_embed(x) # B x M x H
         h_cache_next = []
         if "p" in self.arch:
-             m_zr = torch.zeros_like(h)
-             m_zr = m_zr.unsqueeze(-1)
-             momentum = (
-                (
-                torch.zeros_like(h),
-                torch.zeros_like(h),
-                torch.zeros_like(h),
-                ),
-                (
-                m_zr
-                )
+            m = torch.zeros_like(h.reshape(-1, h.shape[-1]))
+            v = torch.zeros_like(h.reshape(-1, h.shape[-1]))
+            moe_out_prev = torch.zeros_like(h)
+            mars_hist = (m, v, moe_out_prev)
+
+            hb = torch.zeros(
+                h.shape[0] * h.shape[1],
+                self.world_size,
+                h.shape[2],
+                device =h.device,
             )
+            momentum = (mars_hist, hb)
         elif "e" in self.arch:
             momentum = (
                 torch.zeros_like(h),
