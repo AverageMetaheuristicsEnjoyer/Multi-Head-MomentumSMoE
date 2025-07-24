@@ -172,7 +172,7 @@ class OuterLayer(InnerGroupLayer):
         scaling_facs = torch.ones_like(c_norm)
         scaling_facs[batch_idx] = c_norm[batch_idx]
         c_t = c / scaling_facs.view(-1, 1, 1)
-        c_t.reshape(-1, self.hidden_size)
+        c_t = c_t.reshape(-1, self.hidden_size)
         
         m_t = self.beta1 * m + (1 - self.beta1) * c_t
         v_t = self.beta2 * v + (1 - self.beta2) * c_t**2
