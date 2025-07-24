@@ -18,14 +18,14 @@ class _Expert(nn.Module):
             num_experts,
             hidden_size,
             inner_hidden_size, 
-            bias = True,
+            bias = False,
             rank = rank,
         )
         self.shrink = FMoELinear(
             num_experts,
             inner_hidden_size,
             hidden_size,
-            bias = True,
+            bias = False,
             rank = rank,
         )
         self.activation = activation
