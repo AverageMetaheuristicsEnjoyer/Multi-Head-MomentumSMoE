@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 
 class BaseGate(nn.Module):
     def __init__(self, num_expert, world_size):
@@ -170,7 +171,8 @@ class SMoE_Reg(BaseGate):
         return top_k_indices, top_k_scores
 
 class GroupsGate(BaseGate):
-    def __init__(self, d_model, num_expert, world_size, top_k = 1, aux_blance=True,
+    def __init__(self, d_model, num_expert, world_size, top_k = 1,
+                 aux_blance=True, aux_type="switch",
                  use_penalty=False, use_pis=False,
                  srome_alpha=1.0, srome_beta=0.9, 
                  srome_lambda1=1.0, srome_lambda2=1.0, **kwargs
@@ -181,7 +183,7 @@ class GroupsGate(BaseGate):
         self.aux_blance = aux_blance
         self.num_groups = world_size
         self.experts_per_group = num_expert
-
+        self.aux_type = aux_type
         self.use_penalty = use_penalty
         self.use_pis = use_pis
         self.alpha = srome_alpha
@@ -193,14 +195,21 @@ class GroupsGate(BaseGate):
             self.register_buffer("avg_probs", torch.zeros(self.tot_expert))
     
     def _calculate_load_balance_loss(self, router_probs, top_k_scores, top_k_indices):
-        with torch.no_grad():
-            one_hot_indices = F.one_hot(top_k_indices, self.tot_expert).float()
-            one_hot_indices = torch.sum(one_hot_indices, dim = 1)
-            f_i = one_hot_indices.mean(dim=0)
-
         P_i = torch.mean(router_probs.float(), dim=0)
 
-        loss = (f_i * P_i).sum() * self.tot_expert
+        if self.aux_type == "kl":
+            log_p_i = torch.log(P_i + 1e-8)
+            log_num_experts = math.log(self.tot_expert)
+            loss = torch.sum(P_i * (log_p_i + log_num_experts))
+        elif self.aux_type == "switch":
+            with torch.no_grad():
+                one_hot_indices = F.one_hot(top_k_indices, self.tot_expert).float()
+                one_hot_indices = torch.sum(one_hot_indices, dim = 1)
+                f_i = one_hot_indices.mean(dim=0)
+            loss = (f_i * P_i).sum() * self.tot_expert
+        else:
+            ValueError("Unknown auxiliary loss type")
+        
         total_loss = loss
 
         if self.use_pis:

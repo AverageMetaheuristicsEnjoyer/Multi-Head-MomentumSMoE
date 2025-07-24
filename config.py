@@ -117,6 +117,12 @@ PARAMS_CONFIG = {
             "help": "Type of MoE gate: 'smoe' or 'mhmoe'.",
             "dest": "gate_name",
         },
+        "--aux-type": {
+            "type": str,
+            "default": "switch",
+            "help": "Type of auxiliary loss: 'switch' or 'kl'.",
+            "dest": "aux_type",
+        },
          "--load-balance": {
             "type": float,
             "default": 0.01,
@@ -251,6 +257,7 @@ PARAMS_CONFIG = {
             "default": False,
             "dest": "use_pis",
         },
+        
     },
     "optim_params": {
         "--lr": {
