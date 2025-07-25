@@ -142,6 +142,8 @@ class InnerGroupLayer(GroupsFMoE):
         self.gamma = gamma
         self.mu = mu
 
+        self.mark_parallel_comm(expert_dp_comm)
+
     def forward(self, inp, momentum=None):
         expert_outputs, gate_scores = super().forward(inp)
         weighted_group_outputs = torch.sum(expert_outputs * gate_scores, dim=2)
