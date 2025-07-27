@@ -113,60 +113,53 @@ class MultiHeadSeqAttention(nn.Module):
         out = self.proj_out(out)
         return out
 
-class OuterLayer(InnerGroupLayer):
+class NoMomentum(nn.Module):
+    def __init__(self, **kwargs):
+        super().__init__()
+
+    def forward(self, moe_out, outer_hist, original_shape = None):
+        return moe_out, outer_hist
+
+class HBOuter(nn.Module):
+    def __init__(
+        self,
+        gamma,
+        mu,
+        **kwargs,
+    ):
+        super().__init__()
+        self.gamma = gamma
+        self.mu = mu
+    
+    def forward(self, moe_out, outer_hist, original_shape):
+        outer_hist = -moe_out + self.mu * outer_hist
+        out = self.gamma * outer_hist
+        return out, outer_hist
+
+class MarsOuter(nn.Module):
     def __init__(
         self,
         hidden_size,
-        inner_hidden_size,
-        dropout,
-        gate,
-        num_experts,
-        moe_top_k,
         gamma1,
         gamma2,
-        mu,
-        world_size,
         beta1,
         beta2,
         **kwargs
     ):
-        super().__init__(
-            hidden_size = hidden_size,
-            inner_hidden_size = inner_hidden_size,
-            dropout = dropout,
-            gate = gate,
-            num_experts = num_experts,
-            moe_top_k = moe_top_k,
-            gamma = gamma1,
-            mu = mu,
-            world_size = world_size,
-            **kwargs
-        )
+        super().__init__()
+        self.hidden_size = hidden_size
         self.gamma1 = gamma1
         self.gamma2 = gamma2
-        self.mu = mu
         self.beta1 = beta1
         self.beta2 = beta2
-        self.dropout = nn.Dropout(dropout)
-        
-        self.hidden_size = hidden_size
     
-    def forward(self, inp, hist):
-        original_shape = inp.shape
-        reshaped_inp = inp.reshape(-1, self.hidden_size)
-        mars_hist, momentum = hist
-        
-        groups_out, momentum = super().forward(reshaped_inp, momentum)
-        moe_out = torch.sum(groups_out, dim=1)
-        moe_out = self.dropout(moe_out)
-        
-        m, v, moe_out_prev = mars_hist
+    def forward(self, moe_out, outer_hist, original_shape):
+        m, v, moe_out_prev = outer_hist
         moe_out_prev = moe_out_prev.reshape(-1, self.hidden_size)
 
         outps_diff = -moe_out - (-moe_out_prev)
 
         c = -moe_out + self.gamma2 * (self.beta1 / (1 - self.beta1)) * outps_diff
-        c = c.reshape(original_shape)
         c_norm = torch.linalg.matrix_norm(c, dim = (-2, -1), ord = "fro")
         batch_idx = c_norm > 1
         scaling_facs = torch.ones_like(c_norm)
@@ -176,12 +169,86 @@ class OuterLayer(InnerGroupLayer):
         
         m_t = self.beta1 * m + (1 - self.beta1) * c_t
         v_t = self.beta2 * v + (1 - self.beta2) * c_t**2
-
         out = self.gamma1 * m_t / (torch.sqrt(v_t + 1e-8))
-        mars_hist = (m_t, v_t, moe_out.detach().reshape(original_shape))
+        outer_hist = (m_t, v_t, moe_out.detach().reshape(original_shape))
+        return out, outer_hist
+
+class OuterLayer(InnerGroupLayer):
+    def __init__(
+        self,
+        hidden_size,
+        inner_hidden_size,
+        dropout,
+        gate,
+        num_experts,
+        moe_top_k,
+        world_size,
+        inner_mom=None,
+        inner_gamma1=1.0,
+        inner_gamma2=1.0,
+        inner_mu=0.9,
+        inner_beta1=0.9,
+        inner_beta2=0.999,
+        outer_mom=None,
+        outer_gamma1=1.0,
+        outer_gamma2=1.0,
+        outer_mu=0.9,
+        outer_beta1=0.9,
+        outer_beta2=0.999,
+        **kwargs
+    ):
+        super().__init__(
+            hidden_size=hidden_size,
+            inner_hidden_size=inner_hidden_size,
+            dropout=dropout,
+            gate=gate,
+            num_experts=num_experts,
+            moe_top_k=moe_top_k,
+            world_size=world_size,
+            inner_mom=inner_mom,
+            inner_gamma1=inner_gamma1, inner_gamma2=inner_gamma2, inner_mu=inner_mu,
+            inner_beta1=inner_beta1, inner_beta2=inner_beta2,
+            **kwargs
+        )
+        self.hidden_size = hidden_size
+        self.outer_mom = outer_mom
+        self.outer_gamma1 = outer_gamma1
+        self.outer_gamma2 = outer_gamma2
+        self.outer_mu = outer_mu
+        self.outer_beta1 = outer_beta1
+        self.outer_beta2 = outer_beta2
+
+        if self.outer_mom == "heavy-ball":
+            self.outer_mom_cls = HBOuter(self.outer_gamma1, self.outer_mu)
+        elif self.outer_mom == "mars":
+            self.outer_mom_cls = MarsOuter(
+                hidden_size,
+                self.outer_gamma1,
+                self.outer_gamma2,
+                self.outer_beta1,
+                self.outer_beta2,
+            )
+        else:
+            self.outer_mom_cls = NoMomentum()
         
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, inp, hist):
+        original_shape = inp.shape
+        batch_size = original_shape[0]
+        seq_len = original_shape[1]
+
+        reshaped_inp = inp.reshape(-1, self.hidden_size)
+        outer_hist, inner_hist = hist
+
+        groups_out, inner_hist = super().forward(reshaped_inp, inner_hist, batch_size, seq_len)
+        moe_out = torch.sum(groups_out, dim=1)
+        moe_out = self.dropout(moe_out)
+
+        out, outer_hist = self.outer_mom_cls(moe_out, outer_hist, original_shape)
         out = out.reshape(original_shape)
-        return out, (mars_hist, momentum)
+
+        return out, (outer_hist, inner_hist)
 
 class MomentumLayer(FMoETransformerMLP):
     def __init__(
@@ -441,6 +508,10 @@ class TransformerSeqLayer(nn.Module):
         s,
         g,
         layerth,
+        inner_mom=None, inner_gamma1=1.0, inner_gamma2=1.0, inner_mu=0.9,
+        inner_beta1=0.9, inner_beta2=0.999,
+        outer_mom=None, outer_gamma1=1.0, outer_gamma2=1.0, outer_mu=0.9,
+        outer_beta1=0.9, outer_beta2=0.999,
         **kwargs
     ):
         super().__init__()
@@ -559,12 +630,13 @@ class TransformerSeqLayer(nn.Module):
                 gate = gate,
                 num_experts = num_experts,
                 moe_top_k = moe_top_k,
-                gamma1 = gamma1,
-                gamma2 = gamma2,
-                mu = mu,
                 world_size = world_size,
-                beta1 = beta1,
-                beta2 = beta2,
+                inner_mom=inner_mom,
+                inner_gamma1=inner_gamma1, inner_gamma2=inner_gamma2, inner_mu=inner_mu,
+                inner_beta1=inner_beta1, inner_beta2=inner_beta2,
+                outer_mom=outer_mom,
+                outer_gamma1=outer_gamma1, outer_gamma2=outer_gamma2, outer_mu=outer_mu,
+                outer_beta1=outer_beta1, outer_beta2=outer_beta2,
                 **kwargs
             )
             if g == "p"
@@ -618,6 +690,10 @@ class TransformerSeq(nn.Module):
         use_xmoe,
         xmoe_dim,
         world_size,
+        inner_mom=None, inner_gamma1=1.0, inner_gamma2=1.0, inner_mu=0.9,
+        inner_beta1=0.9, inner_beta2=0.999,
+        outer_mom=None, outer_gamma1=1.0, outer_gamma2=1.0, outer_mu=0.9,
+        outer_beta1=0.9, outer_beta2=0.999,
         **kwargs,
     ):
         super().__init__()
@@ -661,29 +737,55 @@ class TransformerSeq(nn.Module):
                 s = self.arch[2 * i],
                 g = self.arch[2 * i + 1],
                 layerth = i,
+                inner_mom=inner_mom,
+                inner_gamma1=inner_gamma1, inner_gamma2=inner_gamma2, inner_mu=inner_mu,
+                inner_beta1=inner_beta1, inner_beta2=inner_beta2,
+                outer_mom=outer_mom,
+                outer_gamma1=outer_gamma1, outer_gamma2=outer_gamma2, outer_mu=outer_mu,
+                outer_beta1=outer_beta1, outer_beta2=outer_beta2,
                 **kwargs
             )
             for i in range(num_layers)
         )
         self.world_size = world_size
+        self.inner_mom = inner_mom
+        self.outer_mom = outer_mom
     
     def forward(self, x, h_cache):
         block_size = x.size(1) # B x M
         h = self.inp_embed(x) # B x M x H
         h_cache_next = []
         if "p" in self.arch:
-            m = torch.zeros_like(h.reshape(-1, h.shape[-1]))
-            v = torch.zeros_like(h.reshape(-1, h.shape[-1]))
-            moe_out_prev = torch.zeros_like(h)
-            mars_hist = (m, v, moe_out_prev)
+            # --- DYNAMIC STATE INITIALIZATION ---
+            
+            # 1. Initialize Outer Layer State
+            if self.outer_mom == 'heavy-ball':
+                # State is 3D: [B, M, H]
+                outer_state = torch.zeros_like(h)
+            elif self.outer_mom == 'mars':
+                # m, v are 2D for token-level updates; prev_out is 3D
+                m_outer = torch.zeros_like(h.reshape(-1, h.shape[-1]))
+                v_outer = torch.zeros_like(h.reshape(-1, h.shape[-1]))
+                prev_out_outer = torch.zeros_like(h)
+                outer_state = (m_outer, v_outer, prev_out_outer)
+            else:
+                outer_state = None
 
-            hb = torch.zeros(
-                h.shape[0] * h.shape[1],
-                self.world_size,
-                h.shape[2],
-                device =h.device,
-            )
-            momentum = (mars_hist, hb)
+            # 2. Initialize Inner Layer State
+            inner_shape_3d = (h.shape[0] * h.shape[1], self.world_size, h.shape[2])
+            if self.inner_mom == 'heavy-ball':
+                # State is 3D: [Tokens, Groups, H]
+                inner_state = torch.zeros(inner_shape_3d, device=h.device)
+            elif self.inner_mom == 'mars':
+                # All history tensors are 3D: [Tokens, Groups, H]
+                m_inner = torch.zeros(inner_shape_3d, device=h.device)
+                v_inner = torch.zeros(inner_shape_3d, device=h.device)
+                prev_out_inner = torch.zeros(inner_shape_3d, device=h.device)
+                inner_state = (m_inner, v_inner, prev_out_inner)
+            else:
+                inner_state = None
+            
+            momentum = (outer_state, inner_state)
         elif "e" in self.arch:
             momentum = (
                 torch.zeros_like(h),
