@@ -257,7 +257,78 @@ PARAMS_CONFIG = {
             "default": False,
             "dest": "use_pis",
         },
-        
+         "--outer-mom": {
+            "type": str,
+            "default": None,
+            "help": "Momentum type for the outer layer: 'heavy-ball' or 'mars'.",
+            "dest": "outer_mom",
+        },
+        "--inner-mom": {
+            "type": str,
+            "default": None,
+            "help": "Momentum type for the inner layer: 'heavy-ball' or 'mars'.",
+            "dest": "inner_mom",
+        },
+        "--outer-mu": {
+            "type": float,
+            "default": 0.7,
+            "help": "Momentum coefficient (mu) for outer MoE layers.",
+            "dest": "outer_mu",
+        },
+        "--outer-gamma1": {
+            "type": float,
+            "default": 1.0,
+            "help": "Outer layer Adam decay/gamma parameter.",
+            "dest": "outer_gamma1",
+        },
+        "--outer-gamma2": {
+            "type": float,
+            "default": 1.0,
+            "help": "Step size (gamma) for outer layer Momentum update.",
+            "dest": "outer_gamma2",
+        },
+        "--outer-beta1": {
+            "type": float,
+            "default": 0.9,
+            "help": "Outer layer Adam optimizer beta1.",
+            "dest": "outer_beta1",
+        },
+        "--outer-beta2": {
+            "type": float,
+            "default": 0.999,
+            "help": "Outer layer Adam optimizer beta2.",
+            "dest": "outer_beta2",
+        },
+        "--inner-mu": {
+            "type": float,
+            "default": 0.7,
+            "help": "Momentum coefficient (mu) for inner MoE layers.",
+            "dest": "inner_mu",
+        },
+        "--inner-gamma1": {
+            "type": float,
+            "default": 1.0,
+            "help": "Inner layer Adam decay/gamma parameter.",
+            "dest": "inner_gamma1",
+        },
+        "--inner-gamma2": {
+            "type": float,
+            "default": 1.0,
+            "help": "Step size (gamma) for inner layer Momentum update.",
+            "dest": "inner_gamma2",
+        },
+        "--inner-beta1": {
+            "type": float,
+            "default": 0.9,
+            "help": "Inner layer Adam optimizer beta1.",
+            "dest": "inner_beta1",
+        },
+        "--inner-beta2": {
+            "type": float,
+            "default": 0.999,
+            "help": "Inner layer Adam optimizer beta2.",
+            "dest": "inner_beta2",
+        },
     },
     "optim_params": {
         "--lr": {
