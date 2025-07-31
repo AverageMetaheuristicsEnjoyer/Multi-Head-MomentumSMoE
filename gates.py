@@ -174,7 +174,7 @@ class GroupsGate(BaseGate):
     def __init__(self, d_model, num_expert, world_size, top_k = 1,
                  aux_blance=True, aux_type="switch",
                  use_penalty=False, use_pis=False,
-                 srome_alpha=1.0, srome_beta=0.9, 
+                 srome_alpha=1.0, srome_beta=0.9,
                  srome_lambda1=1.0, srome_lambda2=1.0, **kwargs
         ):
         super().__init__(num_expert, world_size)
@@ -192,9 +192,16 @@ class GroupsGate(BaseGate):
         self.lambda2 = srome_lambda2
 
         if use_penalty:
-            self.register_buffer("avg_probs", torch.zeros(self.tot_expert))
-    
+            # ===Update===
+            # Renamed for clarity, as it penalizes logits.
+            self.register_buffer("avg_logits", torch.zeros(self.tot_expert))
+            # ===End of update===
+
     def _calculate_load_balance_loss(self, router_probs, top_k_scores, top_k_indices):
+        # router_probs shape: (batch_size, tot_expert)
+        # top_k_scores shape: (batch_size, num_groups * top_k)
+        # top_k_indices shape: (batch_size, num_groups * top_k)
+
         P_i = torch.mean(router_probs.float(), dim=0)
 
         if self.aux_type == "kl":
@@ -208,78 +215,70 @@ class GroupsGate(BaseGate):
                 f_i = one_hot_indices.mean(dim=0)
             loss = (f_i * P_i).sum() * self.tot_expert
         else:
-            ValueError("Unknown auxiliary loss type")
-        
+            raise ValueError("Unknown auxiliary loss type")
+
         total_loss = loss
 
         if self.use_pis:
-            # reshape to group
-            # compute for every group
-            norm_pi = torch.linalg.vector_norm(router_probs, ord=2, dim=-1).pow(2)
-            norm_pi_tilde = torch.linalg.vector_norm(top_k_scores, ord=2, dim=-1).pow(2)
+            batch_size = router_probs.shape[0]
+            grouped_router_probs = router_probs.view(batch_size, self.num_groups, self.experts_per_group)
+            grouped_top_k_scores = top_k_scores.view(batch_size, self.num_groups, self.top_k)
 
-            reg_loss = -self.lambda1 * torch.mean(norm_pi) + self.lambda2 * torch.mean(norm_pi_tilde)
-            total_loss += reg_loss
-            # total_loss += reg_loss_each_group
-        
+            norm_pi_per_group = torch.linalg.vector_norm(grouped_router_probs, ord=2, dim=-1).pow(2)
+            norm_pi_tilde_per_group = torch.linalg.vector_norm(grouped_top_k_scores, ord=2, dim=-1).pow(2)
+
+            reg_loss_per_group = -self.lambda1 * torch.mean(norm_pi_per_group) + self.lambda2 * torch.mean(norm_pi_tilde_per_group)
+            total_loss += reg_loss_per_group
+
         self.set_loss(total_loss)
 
     def forward(self, inp, return_all_scores=False):
         batch_size = inp.shape[0]
-
-        # бьем на группы и дальше то же самое
-        # сумма pi~
         logits = self.gate(inp)
+
         if self.use_penalty:
-            # penalty
-            penalty = self.avg_probs.unsqueeze(0) * self.alpha
+            penalty = self.avg_logits.unsqueeze(0) * self.alpha
             balanced_logits = logits - penalty
 
             if self.training:
-                # формула -- вторая строка
                 router_probs_for_balance = F.softmax(logits.float(), dim = -1)
                 mean_batch_probs = torch.mean(router_probs_for_balance, dim = 0)
                 with torch.no_grad():
-                    self.avg_probs.mul_(self.beta)
-                    self.avg_probs.add_(mean_batch_probs.detach(), alpha=1.0 - self.beta)
+                    # ===Update===
+                    self.avg_logits.mul_(self.beta)
+                    self.avg_logits.add_(mean_batch_probs.detach(), alpha=1.0 - self.beta)
+                    # ===End of update===
 
-            # формула -- первая строка без температуры
             global_balanced_probs = F.softmax(balanced_logits, dim=-1)
             grouped_balanced_probs = global_balanced_probs.view(batch_size, self.num_groups, self.experts_per_group)
 
-            # подсчет финального скора
-            # по аналогии deepseek мы используем сбалансированные значения лишь для индексов 
             _, top_k_indices_per_group = torch.topk(
                 grouped_balanced_probs, k=self.top_k, dim=-1
             )
-            
-            # считаем по изначальным реальным логитам
+
             global_probs = F.softmax(logits, dim=-1)
             grouped_probs = global_probs.view(batch_size, self.num_groups, self.experts_per_group)
-            
-            # две следующие строки с pi tilde -- третья строка из формулы
+
             top_k_probs_per_group = torch.gather(grouped_probs, dim=-1, index=top_k_indices_per_group)
-            
+
             final_scores = top_k_probs_per_group.view(batch_size, -1)
             group_offset = torch.arange(
                 0, self.tot_expert, self.experts_per_group, device=inp.device
             ).unsqueeze(0).unsqueeze(-1)
             global_top_k_indices = top_k_indices_per_group + group_offset
-            
+
             final_indices = global_top_k_indices.view(batch_size, -1)
             if self.training and self.aux_blance:
                 self._calculate_load_balance_loss(global_probs, final_scores, final_indices)
-            
+
             if return_all_scores:
                 return final_indices, final_scores, logits
             return final_indices, final_scores
 
         else:
-            # формула -- первая строка
             global_probs = F.softmax(logits, dim=-1)
             grouped_probs = global_probs.view(batch_size, self.num_groups, self.experts_per_group)
 
-            # формула -- pi tilde
             top_k_probs_per_group, top_k_indices_per_group = torch.topk(
                 grouped_probs, k=self.top_k, dim=-1
             )
@@ -289,11 +288,11 @@ class GroupsGate(BaseGate):
                 0, self.tot_expert, self.experts_per_group, device=inp.device
             ).unsqueeze(0).unsqueeze(-1)
             global_top_k_indices = top_k_indices_per_group + group_offset
-            
+
             final_indices = global_top_k_indices.view(batch_size, -1)
             if self.training and self.aux_blance:
                 self._calculate_load_balance_loss(global_probs, final_scores, final_indices)
-            
+
             if return_all_scores:
                 return final_indices, final_scores, logits
             return final_indices, final_scores
