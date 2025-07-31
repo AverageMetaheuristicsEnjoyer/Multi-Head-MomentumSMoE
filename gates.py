@@ -213,41 +213,51 @@ class GroupsGate(BaseGate):
         total_loss = loss
 
         if self.use_pis:
-            gating_logits = torch.full_like(router_probs, float("-inf"))
-            
+            # reshape to group
+            # compute for every group
             norm_pi = torch.linalg.vector_norm(router_probs, ord=2, dim=-1).pow(2)
             norm_pi_tilde = torch.linalg.vector_norm(top_k_scores, ord=2, dim=-1).pow(2)
 
             reg_loss = -self.lambda1 * torch.mean(norm_pi) + self.lambda2 * torch.mean(norm_pi_tilde)
             total_loss += reg_loss
+            # total_loss += reg_loss_each_group
         
         self.set_loss(total_loss)
 
     def forward(self, inp, return_all_scores=False):
         batch_size = inp.shape[0]
 
+        # бьем на группы и дальше то же самое
+        # сумма pi~
         logits = self.gate(inp)
         if self.use_penalty:
+            # penalty
             penalty = self.avg_probs.unsqueeze(0) * self.alpha
             balanced_logits = logits - penalty
 
             if self.training:
+                # формула -- вторая строка
                 router_probs_for_balance = F.softmax(logits.float(), dim = -1)
                 mean_batch_probs = torch.mean(router_probs_for_balance, dim = 0)
                 with torch.no_grad():
                     self.avg_probs.mul_(self.beta)
                     self.avg_probs.add_(mean_batch_probs.detach(), alpha=1.0 - self.beta)
 
+            # формула -- первая строка без температуры
             global_balanced_probs = F.softmax(balanced_logits, dim=-1)
             grouped_balanced_probs = global_balanced_probs.view(batch_size, self.num_groups, self.experts_per_group)
 
+            # подсчет финального скора
+            # по аналогии deepseek мы используем сбалансированные значения лишь для индексов 
             _, top_k_indices_per_group = torch.topk(
                 grouped_balanced_probs, k=self.top_k, dim=-1
             )
-
+            
+            # считаем по изначальным реальным логитам
             global_probs = F.softmax(logits, dim=-1)
             grouped_probs = global_probs.view(batch_size, self.num_groups, self.experts_per_group)
-
+            
+            # две следующие строки с pi tilde -- третья строка из формулы
             top_k_probs_per_group = torch.gather(grouped_probs, dim=-1, index=top_k_indices_per_group)
             
             final_scores = top_k_probs_per_group.view(batch_size, -1)
@@ -265,9 +275,11 @@ class GroupsGate(BaseGate):
             return final_indices, final_scores
 
         else:
+            # формула -- первая строка
             global_probs = F.softmax(logits, dim=-1)
             grouped_probs = global_probs.view(batch_size, self.num_groups, self.experts_per_group)
 
+            # формула -- pi tilde
             top_k_probs_per_group, top_k_indices_per_group = torch.topk(
                 grouped_probs, k=self.top_k, dim=-1
             )
