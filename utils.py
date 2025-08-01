@@ -34,7 +34,8 @@ class ExpertActivationTracker:
         self.output_dir = output_dir
         self.activation_counts = defaultdict(list)
         self.annot = annot
-        os.makedirs(self.output_dir, exist_ok = True)
+        if self.output_dir:
+            os.makedirs(self.output_dir, exist_ok = True)
     
     def _get_activation_hook(self, layer_name, total_experts):
         def hook(module, input, output):
@@ -336,7 +337,8 @@ def _load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distr
     unwrapped_model = model.module if hasattr(model, 'module') else model
     unwrapped_model.load_state_dict(model_state_dict)
 
-    optimizer.load_state_dict(checkpoint_state["app"]["optim"])
+    if optimizer:
+        optimizer.load_state_dict(checkpoint_state["app"]["optim"])
     if scheduler is not None:
         scheduler.load_state_dict(checkpoint_state["scheduler"])
     return iter_init
@@ -344,7 +346,7 @@ def _load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distr
 
 def load_checkpoint(checkpoint_path, model, optimizer, scheduler, logger, distributed, sharded, resume, wandb_params):
     if resume:
-        wandb_flag = wandb_params["wandb_flag"]
+        wandb_flag = wandb_params.get("wandb_flag", False)
         if wandb_flag:
             run_id = wandb_params.get("run_id", None)
             wandb.init(project=wandb_params["project_name"], id = run_id, resume = "allow")
