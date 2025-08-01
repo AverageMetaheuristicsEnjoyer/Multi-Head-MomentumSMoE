@@ -233,22 +233,39 @@ class OuterLayer(InnerGroupLayer):
         
         self.dropout = nn.Dropout(dropout)
     
+    # def forward(self, inp, hist):
+    #     original_shape = inp.shape
+    #     batch_size = original_shape[0]
+    #     seq_len = original_shape[1]
+
+    #     reshaped_inp = inp.reshape(-1, self.hidden_size)
+    #     outer_hist, inner_hist = hist
+
+    #     groups_out, inner_hist = super().forward(reshaped_inp, inner_hist, batch_size, seq_len)
+    #     moe_out = torch.sum(groups_out, dim=1)
+    #     moe_out = self.dropout(moe_out)
+
+    #     # print("="*25)
+    #     # print(moe_out.shape)
+    #     # print(outer_hist.shape)
+    #     # print("="*25)
+    #     moe_out = moe_out.reshape(original_shape)
+    #     out, outer_hist = self.outer_mom_cls(moe_out, outer_hist, original_shape)
+        
+    #     # outer_hist = outer_hist.reshape(original_shape)
+
+    #     return out, (outer_hist, inner_hist)
     def forward(self, inp, hist):
         original_shape = inp.shape
-        batch_size = original_shape[0]
-        seq_len = original_shape[1]
-
         reshaped_inp = inp.reshape(-1, self.hidden_size)
-        outer_hist, inner_hist = hist
-
-        groups_out, inner_hist = super().forward(reshaped_inp, inner_hist, batch_size, seq_len)
+        mars_hist, momentum = hist
+        
+        groups_out, momentum = super().forward(reshaped_inp, momentum)
         moe_out = torch.sum(groups_out, dim=1)
         moe_out = self.dropout(moe_out)
-
-        out, outer_hist = self.outer_mom_cls(moe_out, outer_hist, original_shape)
+        out = moe_out
         out = out.reshape(original_shape)
-
-        return out, (outer_hist, inner_hist)
+        return out, (mars_hist, momentum)
 
 class MomentumLayer(FMoETransformerMLP):
     def __init__(

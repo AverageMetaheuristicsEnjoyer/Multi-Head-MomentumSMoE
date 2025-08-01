@@ -241,6 +241,7 @@ def launch(
 
     nb_batches_per_iter = trainer_params["nb_batches_per_iter"]
     num_epochs = trainer_params.get("epochs", 5)
+    # num_epochs = 15
     for iter_no in range(iter_init, num_epochs):
         if is_master:
             logging(f"=================== EPOCHS {iter_no} ======================")
@@ -293,30 +294,31 @@ def launch(
                 continue
                 
         if is_master:
+            mean_variance = activation_tracker.plot_and_save(iter_no)
+            
             if ("enwik8" in data_params["data_path"]) or (
                 "text8" in data_params["data_path"]
             ):
-                msg_result = "Epochs: {} | loss_train: {:.3f} ~ {:.3f} BPC | loss_val: {:.3f} ~ {:.3f} BPC | elapsed: {:.1f}".format(
+                msg_result = "Epochs: {} | loss_train: {:.3f} ~ {:.3f} BPC | loss_val: {:.3f} ~ {:.3f} BPC | elapsed: {:.1f} | mean_variance: {:.8f}".format(
                     iter_no,
                     loss_train,
                     float(loss_train / math.log(2)),
                     loss_val,
                     float(loss_val / math.log(2)),
                     elapsed,
+                    mean_variance
                 )
             else:
-                msg_result = "Epochs: {} | loss_train: {:.3f} ~ {:.3f} PPL | loss_val: {:.3f} ~ {:.3f} PPL | elapsed: {:.1f}".format(
+                msg_result = "Epochs: {} | loss_train: {:.3f} ~ {:.3f} PPL | loss_val: {:.3f} ~ {:.3f} PPL | elapsed: {:.1f} | mean_variance: {:.8f}".format(
                     iter_no,
                     loss_train,
                     float(math.exp(loss_train)),
                     loss_val,
                     float(math.exp(loss_val)),
                     elapsed,
+                    mean_variance
                 )
             logging(msg_result)
-
-            print(f"Generating expert activation plot for epoch {iter_no}...")
-            activation_tracker.plot_and_save(iter_no)
             
             # Log to wandb only from the master process
             if wandb_flag:
@@ -329,7 +331,7 @@ def launch(
                     'elapsed_ms': elapsed
                 })
             
-            logger.log_iter(iter_no, nb_batches_per_iter, loss_train, loss_val, elapsed, model)
+            logger.log_iter(iter_no, nb_batches_per_iter, loss_train, loss_val, elapsed, model, mean_variance)
             
             # Save the model if the validation loss is the best we've seen so far.
             if (best_val_loss is None) or loss_val < best_val_loss:

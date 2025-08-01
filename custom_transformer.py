@@ -152,22 +152,22 @@ class MarsInner(nn.Module):
         m, v, moe_out_prev = inner_hist
         outps_diff = -moe_out - (-moe_out_prev)
         c = -moe_out + self.gamma2 * (self.beta1 / (1 - self.beta1)) * outps_diff
+        # `c` is a 3D tensor: [Tokens, Groups, HiddenDim]
         
-        c_4d = c.reshape(batch_size, seq_len, self.num_groups, self.hidden_size)
+        # --- THIS IS THE KEY CHANGE TO REPLICATE THE OLD OUTER LOGIC ---
+        # 1. Flatten the 3D tensor [Tokens, G, H] into a 2D tensor [Tokens*G, H]
+        #    This treats all group outputs for all tokens as one giant matrix.
+        c_2d = c.reshape(-1, self.hidden_size)
         
-        # Permute to [G, B, M, H] to isolate groups for batched norm
-        c_permuted = c_4d.permute(2, 0, 1, 3)
-        
-        # Compute matrix norm on the [M, H] slice for each group and sequence
-        c_norm = torch.linalg.matrix_norm(c_permuted, dim=(-2, -1), ord="fro")
+        # 2. Compute the Frobenius norm of the ENTIRE flattened matrix.
+        #    This results in a single scalar value for the whole batch.
+        c_norm = torch.linalg.matrix_norm(c_2d, ord="fro")
 
-        batch_idx = c_norm > 1
-        scaling_facs = torch.ones_like(c_norm)
-        scaling_facs[batch_idx] = c_norm[batch_idx]
-        c_t_permuted = c_permuted / scaling_facs.unsqueeze(-1).unsqueeze(-1)
-
-        c_t_4d = c_t_permuted.permute(1, 2, 0, 3)
-        c_t = c_t_4d.reshape(-1, self.num_groups, self.hidden_size)
+        # 3. Apply the single scalar scaling factor to the original 3D tensor `c`.
+        #    This is a much gentler, global form of normalization.
+        scaling_fac = max(1.0, c_norm.item()) # Use .item() to get a Python scalar
+        c_t = c / scaling_fac
+        # --- END OF CHANGE ---
 
         m_t = self.beta1 * m + (1 - self.beta1) * c_t
         v_t = self.beta2 * v + (1 - self.beta2) * c_t**2
@@ -239,15 +239,28 @@ class InnerGroupLayer(GroupsFMoE):
 
         self.mark_parallel_comm(expert_dp_comm)
 
-    def forward(self, inp, inner_hist, batch_size, seq_len):        
+    # def forward(self, inp, inner_hist, batch_size, seq_len):        
+    #     expert_outputs, gate_scores = super().forward(inp)
+    #     weighted_group_outputs = torch.sum(expert_outputs * gate_scores, dim=2)
+
+    #     group_moe_out, inner_hist = self.inner_mom_cls(
+    #         weighted_group_outputs,
+    #         inner_hist,
+    #         batch_size,
+    #         seq_len,
+    #     )
+        
+    #     return group_moe_out, inner_hist
+    def forward(self, inp, momentum=None):
         expert_outputs, gate_scores = super().forward(inp)
+
+        # 1. Perform weighted sum within each group
+        # Result shape: (tokens, num_groups, dim)
         weighted_group_outputs = torch.sum(expert_outputs * gate_scores, dim=2)
 
-        group_moe_out, inner_hist = self.inner_mom_cls(
-            weighted_group_outputs,
-            inner_hist,
-            batch_size,
-            seq_len,
-        )
-        
-        return group_moe_out, inner_hist
+        # momentum = -weighted_group_outputs + self.mu * momentum
+        # group_moe_out = self.gamma * momentum
+        # moe_out = torch.sum(weighted_group_outputs, dim=1)
+
+        output = weighted_group_outputs
+        return output, momentum

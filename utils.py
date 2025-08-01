@@ -121,6 +121,7 @@ class ExpertActivationTracker:
         plt.savefig(output_filename, dpi=300, bbox_inches='tight')
         plt.close(fig)
         print(f"Expert activation plot saved to: {output_filename}")
+        return mean_variance
 
 def logging(s, log_path, print_=True, log_=True):
     if print_:
@@ -482,7 +483,7 @@ class Logger:
         self._state_dict[title].append(value)
 
     def log_iter(
-        self, iter_no, nb_batches_per_iter, loss_train, loss_val, elapsed, model
+        self, iter_no, nb_batches_per_iter, loss_train, loss_val, elapsed, model, mean_variance
     ):
         step = (iter_no + 1) * nb_batches_per_iter
         train_bpc = float(loss_train / math.log(2))
@@ -505,5 +506,6 @@ class Logger:
             avg_moe_loss = sum(moe_stats) / len(moe_stats)
             self._log("moe_balance_loss", avg_moe_loss)
             msg += "\tmoe_balance_loss: {:.5f}".format(avg_moe_loss)
+            msg += "\tmean_variance: {:.8f}".format(mean_variance)
 
         print(msg)

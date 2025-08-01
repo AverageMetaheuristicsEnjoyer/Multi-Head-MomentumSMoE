@@ -171,7 +171,7 @@ class SMoE_Reg(BaseGate):
         return top_k_indices, top_k_scores
 
 class GroupsGate(BaseGate):
-    def __init__(self, d_model, num_expert, world_size, top_k = 1,
+    def __init__(self, d_model, num_expert, world_size, top_k=1,
                  aux_blance=True, aux_type="switch",
                  use_penalty=False, use_pis=False,
                  srome_alpha=1.0, srome_beta=0.9,
@@ -192,110 +192,83 @@ class GroupsGate(BaseGate):
         self.lambda2 = srome_lambda2
 
         if use_penalty:
-            # ===Update===
-            # Renamed for clarity, as it penalizes logits.
             self.register_buffer("avg_logits", torch.zeros(self.tot_expert))
-            # ===End of update===
 
     def _calculate_load_balance_loss(self, router_probs, top_k_scores, top_k_indices):
-        # router_probs shape: (batch_size, tot_expert)
-        # top_k_scores shape: (batch_size, num_groups * top_k)
-        # top_k_indices shape: (batch_size, num_groups * top_k)
+        # Note: router_probs should be from the *original* logits for an unbiased measure
+        with torch.no_grad():
+            one_hot_indices = F.one_hot(top_k_indices, self.tot_expert).float()
+            one_hot_indices = torch.sum(one_hot_indices, dim=1)
+            f_i = one_hot_indices.mean(dim=0)
 
         P_i = torch.mean(router_probs.float(), dim=0)
 
-        if self.aux_type == "kl":
-            log_p_i = torch.log(P_i + 1e-8)
-            log_num_experts = math.log(self.tot_expert)
-            loss = torch.sum(P_i * (log_p_i + log_num_experts))
-        elif self.aux_type == "switch":
-            with torch.no_grad():
-                one_hot_indices = F.one_hot(top_k_indices, self.tot_expert).float()
-                one_hot_indices = torch.sum(one_hot_indices, dim = 1)
-                f_i = one_hot_indices.mean(dim=0)
-            loss = (f_i * P_i).sum() * self.tot_expert
-        else:
-            raise ValueError("Unknown auxiliary loss type")
-
+        # Standard Switch Transformer load balancing loss
+        loss = (f_i * P_i).sum() * self.tot_expert
         total_loss = loss
 
         if self.use_pis:
-            batch_size = router_probs.shape[0]
-            grouped_router_probs = router_probs.view(batch_size, self.num_groups, self.experts_per_group)
-            grouped_top_k_scores = top_k_scores.view(batch_size, self.num_groups, self.top_k)
+            # Calculate L2 norm regularization terms
+            norm_pi = torch.linalg.vector_norm(router_probs, ord=2, dim=-1).pow(2)
+            norm_pi_tilde = torch.linalg.vector_norm(top_k_scores, ord=2, dim=-1).pow(2)
 
-            norm_pi_per_group = torch.linalg.vector_norm(grouped_router_probs, ord=2, dim=-1).pow(2)
-            norm_pi_tilde_per_group = torch.linalg.vector_norm(grouped_top_k_scores, ord=2, dim=-1).pow(2)
-
-            reg_loss_per_group = -self.lambda1 * torch.mean(norm_pi_per_group) + self.lambda2 * torch.mean(norm_pi_tilde_per_group)
-            total_loss += reg_loss_per_group
-
+            reg_loss = -self.lambda1 * torch.mean(norm_pi) + self.lambda2 * torch.mean(norm_pi_tilde)
+            total_loss += reg_loss
+        
         self.set_loss(total_loss)
 
     def forward(self, inp, return_all_scores=False):
         batch_size = inp.shape[0]
         logits = self.gate(inp)
 
+        # Determine the logits to be used for expert selection
         if self.use_penalty:
             penalty = self.avg_logits.unsqueeze(0) * self.alpha
             balanced_logits = logits - penalty
-
+            
             if self.training:
-                router_probs_for_balance = F.softmax(logits.float(), dim = -1)
-                mean_batch_probs = torch.mean(router_probs_for_balance, dim = 0)
+                # Update the moving average of logits using the original, un-balanced logits
+                router_probs_for_balance = F.softmax(logits.float(), dim=-1)
+                mean_batch_probs = torch.mean(router_probs_for_balance, dim=0)
                 with torch.no_grad():
-                    # ===Update===
-                    self.avg_logits.mul_(self.beta)
-                    self.avg_logits.add_(mean_batch_probs.detach(), alpha=1.0 - self.beta)
-                    # ===End of update===
-
-            global_balanced_probs = F.softmax(balanced_logits, dim=-1)
-            grouped_balanced_probs = global_balanced_probs.view(batch_size, self.num_groups, self.experts_per_group)
-
-            _, top_k_indices_per_group = torch.topk(
-                grouped_balanced_probs, k=self.top_k, dim=-1
-            )
-
-            global_probs = F.softmax(logits, dim=-1)
-            grouped_probs = global_probs.view(batch_size, self.num_groups, self.experts_per_group)
-
-            top_k_probs_per_group = torch.gather(grouped_probs, dim=-1, index=top_k_indices_per_group)
-
-            final_scores = top_k_probs_per_group.view(batch_size, -1)
-            group_offset = torch.arange(
-                0, self.tot_expert, self.experts_per_group, device=inp.device
-            ).unsqueeze(0).unsqueeze(-1)
-            global_top_k_indices = top_k_indices_per_group + group_offset
-
-            final_indices = global_top_k_indices.view(batch_size, -1)
-            if self.training and self.aux_blance:
-                self._calculate_load_balance_loss(global_probs, final_scores, final_indices)
-
-            if return_all_scores:
-                return final_indices, final_scores, logits
-            return final_indices, final_scores
-
+                    self.avg_logits.mul_(self.beta).add_(mean_batch_probs.detach(), alpha=1.0 - self.beta)
+            
+            # Use the balanced logits for making the routing decision
+            selection_logits = balanced_logits
         else:
-            global_probs = F.softmax(logits, dim=-1)
-            grouped_probs = global_probs.view(batch_size, self.num_groups, self.experts_per_group)
+            # Use the original logits for making the routing decision
+            selection_logits = logits
 
-            top_k_probs_per_group, top_k_indices_per_group = torch.topk(
-                grouped_probs, k=self.top_k, dim=-1
-            )
+        # --- Common MoGE Routing Logic ---
+        
+        # Probabilities for selection are derived from the chosen logits (either original or balanced)
+        global_probs_for_selection = F.softmax(selection_logits, dim=-1)
+        grouped_probs_for_selection = global_probs_for_selection.view(batch_size, self.num_groups, self.experts_per_group)
 
-            final_scores = top_k_probs_per_group.view(batch_size, -1)
-            group_offset = torch.arange(
-                0, self.tot_expert, self.experts_per_group, device=inp.device
-            ).unsqueeze(0).unsqueeze(-1)
-            global_top_k_indices = top_k_indices_per_group + group_offset
+        # Perform local top-k selection within each group
+        top_k_probs_per_group, top_k_indices_per_group = torch.topk(
+            grouped_probs_for_selection, k=self.top_k, dim=-1
+        )
 
-            final_indices = global_top_k_indices.view(batch_size, -1)
-            if self.training and self.aux_blance:
-                self._calculate_load_balance_loss(global_probs, final_scores, final_indices)
+        # The final scores are the probabilities of the selected experts
+        final_scores = top_k_probs_per_group.view(batch_size, -1)
+        
+        # Reconstruct the global indices of the selected experts
+        group_offset = torch.arange(
+            0, self.tot_expert, self.experts_per_group, device=inp.device
+        ).unsqueeze(0).unsqueeze(-1)
+        global_top_k_indices = top_k_indices_per_group + group_offset
+        final_indices = global_top_k_indices.view(batch_size, -1)
 
-            if return_all_scores:
-                return final_indices, final_scores, logits
-            return final_indices, final_scores
+        # --- Auxiliary Loss Calculation (only during training) ---
+        if self.training and self.aux_blance:
+            # For an unbiased measure, always use the original probabilities for the loss
+            global_probs_for_loss = F.softmax(logits.float(), dim=-1)
+            self._calculate_load_balance_loss(global_probs_for_loss, final_scores, final_indices)
+
+        if return_all_scores:
+            return final_indices, final_scores, logits
+        return final_indices, final_scores
 
 # class EF21Gate(BaseGate):
 #     def __init__(self, d_model, num_expert, world_size, top_k=2):
